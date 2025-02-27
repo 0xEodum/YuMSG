@@ -1,6 +1,7 @@
 // lib/core/services/websocket/websocket_service.dart
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:rxdart/rxdart.dart';
 import '../session/session_service.dart';
@@ -10,17 +11,17 @@ import 'websocket_event.dart';
 class WebSocketService {
   static final WebSocketService _instance = WebSocketService._internal();
   factory WebSocketService() => _instance;
+  
   WebSocketService._internal();
 
   WebSocketChannel? _channel;
   final _sessionService = SessionService();
-  final _serverProvider = ServerDataProvider.instance;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
   bool _isConnecting = false;
 
   // Контроллеры для различных типов событий
-  final _onConnected = BehaviorSubject<bool>();
+  final _onConnected = BehaviorSubject<bool>.seeded(false);
   final _onChatInit = PublishSubject<ChatInitEvent>();
   final _onKeyExchange = PublishSubject<KeyExchangeEvent>();
   final _onKeyExchangeComplete = PublishSubject<KeyExchangeCompleteEvent>();
@@ -43,12 +44,22 @@ class WebSocketService {
     _isConnecting = true;
 
     try {
+      // Проверяем, инициализирован ли провайдер
+      if (!ServerDataProvider.isInitialized) {
+        final address = await _sessionService.getServerAddress();
+        if (address == null) {
+          throw Exception('Нет адреса сервера');
+        }
+        ServerDataProvider.initialize('http://$address');
+      }
+      
+      final serverProvider = ServerDataProvider.instance;
       final authData = await _sessionService.getAuthData();
       if (authData == null) {
         throw Exception('Нет данных авторизации');
       }
 
-      final wsUrl = Uri.parse('${_serverProvider.baseUrl.replaceFirst('http', 'ws')}/ws')
+      final wsUrl = Uri.parse('${serverProvider.baseUrl.replaceFirst('http', 'ws')}/ws')
           .replace(queryParameters: {
         'token': authData.accessToken,
       });
@@ -66,6 +77,7 @@ class WebSocketService {
       _startPingTimer();
       _onConnected.add(true);
     } catch (e) {
+      debugPrint('Error connecting to WebSocket: $e');
       _handleError(e);
     } finally {
       _isConnecting = false;
@@ -99,21 +111,21 @@ class WebSocketService {
           // Обработка pong-ответа от сервера
           break;
         default:
-          print('Неизвестный тип события: ${event.type}');
+          debugPrint('Неизвестный тип события: ${event.type}');
       }
     } catch (e) {
-      print('Ошибка обработки сообщения: $e');
+      debugPrint('Ошибка обработки сообщения: $e');
     }
   }
 
   void _handleError(dynamic error) {
-    print('WebSocket error: $error');
+    debugPrint('WebSocket error: $error');
     _onConnected.add(false);
     _scheduleReconnect();
   }
 
   void _handleDisconnect() {
-    print('WebSocket disconnected');
+    debugPrint('WebSocket disconnected');
     _cleanupConnection();
     _onConnected.add(false);
     _scheduleReconnect();
