@@ -1,5 +1,6 @@
 // lib/core/navigation/app_router.dart
 import 'package:flutter/material.dart';
+import 'package:yumsg/features/chat/presentation/screens/chat_screen.dart';
 import 'package:yumsg/features/main/presentation/screens/main_screen.dart';
 import '../services/session/session_service.dart';
 import '../../features/server_connection/presentation/screens/server_connection_screen.dart';
@@ -62,11 +63,11 @@ class AppRouter {
             'ChatScreen requires ChatScreenArgs but got ${settings.arguments.runtimeType}'
           );
         }
-        // TODO: Implement ChatScreen
+        final args = settings.arguments as ChatScreenArgs;
         return MaterialPageRoute(
-          builder: (_) => Scaffold(
-            appBar: AppBar(title: const Text('Chat')),
-            body: const Center(child: Text('Chat Screen')),
+          builder: (_) => ChatScreen(
+            chatId: args.chatId,
+            participantName: args.chatName,
           ),
         );
 

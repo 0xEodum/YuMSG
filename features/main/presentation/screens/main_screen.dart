@@ -1,6 +1,10 @@
 // lib/features/main/presentation/screens/main_screen.dart
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:yumsg/features/chat/domain/adapters/chat_adapters.dart';
+import 'package:yumsg/features/chat/domain/services/chat_service.dart';
 import '../../domain/models/chat_data.dart';
 import '../widgets/navigation_panel.dart';
 import '../widgets/side_panel.dart';
@@ -22,46 +26,73 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final _sessionService = SessionService();
   final _communicationService = CommunicationService();
   final _backgroundService = BackgroundService();
+  final _chatService = ChatService();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  final _navigationPanelKey = GlobalKey<NavigationPanelState>();
   late WorkMode _workMode;
+  bool _isLoadingWorkMode = true;
   
   // Временные данные для демонстрации
-  final List<ChatData> _chats = [
-    ChatData(
-      id: '1',
-      name: 'Команда разработки',
-      lastMessage: 'Обновил документацию по API эндпоинтам',
-      time: '12:30',
-      unreadCount: 3,
-    ),
-    ChatData(
-      id: '2',
-      name: 'Анна Петрова',
-      lastMessage: 'Файл с презентацией отправлен',
-      time: '11:45',
-      unreadCount: 0,
-    ),
-    ChatData(
-      id: '3',
-      name: 'Служба поддержки',
-      lastMessage: 'Спасибо за обратную связь!',
-      time: '10:15',
-      unreadCount: 1,
-    ),
-  ];
+  List<ChatData> _chats = [];
+  bool _isLoadingChats = true;
+
+  StreamSubscription? _chatListSubscription;
 
   @override
   void initState() {
     super.initState();
     _loadWorkMode();
     _initializeServices();
+    _loadChats();
     WidgetsBinding.instance.addObserver(this);
   }
   
   @override
   void dispose() {
+    _chatListSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _loadChats() async {
+    setState(() {
+      _isLoadingChats = true;
+    });
+    
+    try {
+      // Подписываемся на обновления списка чатов
+      _chatListSubscription?.cancel();
+      _chatListSubscription = _chatService.chats.listen((chats) {
+        if (mounted) {
+          setState(() {
+            _chats = ChatAdapters.chatsToCharDataList(chats);
+            _isLoadingChats = false;
+          });
+        }
+      });
+      
+      // Загружаем начальный список чатов
+      final initialChats = await _chatService.getChats();
+      if (mounted) {
+        setState(() {
+          _chats = ChatAdapters.chatsToCharDataList(initialChats);
+          _isLoadingChats = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingChats = false;
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка загрузки чатов: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
   
   @override
@@ -82,11 +113,34 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _loadWorkMode() async {
-    final mode = await _sessionService.getWorkMode();
-    if (mounted) {
-      setState(() {
-        _workMode = mode!;
-      });
+    setState(() {
+      _isLoadingWorkMode = true;
+    });
+    
+    try {
+      final mode = await _sessionService.getWorkMode();
+      if (mounted) {
+        setState(() {
+          // Если режим null, используем WorkMode.server по умолчанию
+          _workMode = mode ?? WorkMode.server;
+          _isLoadingWorkMode = false;
+        });
+      }
+    } catch (e) {
+      // В случае ошибки используем WorkMode.server по умолчанию
+      if (mounted) {
+        setState(() {
+          _workMode = WorkMode.server;
+          _isLoadingWorkMode = false;
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка загрузки режима работы: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
   
@@ -129,11 +183,21 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    // Показываем индикатор загрузки, пока _workMode не инициализирован
+    if (_isLoadingWorkMode) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    
     return Scaffold(
       key: _scaffoldKey,
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(kToolbarHeight),
         child: NavigationPanel(
+          key: _navigationPanelKey,
           onMenuPressed: _handleMenuPressed,
         ),
       ),
@@ -144,7 +208,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       ),
       body: Column(
         children: [
-          // Индикатор статуса соединения
+          // Индикатор статуса соединения (только для серверного режима)
           Consumer<ConnectionStatusProvider>(
             builder: (context, provider, child) {
               // Только для серверного режима показываем статус соединения
@@ -187,16 +251,28 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           ),
           // Список чатов
           Expanded(
-            child: _chats.isEmpty
-                ? _buildEmptyState()
-                : ListView.builder(
-                    itemCount: _chats.length,
-                    itemBuilder: (context, index) {
-                      return ChatListItem(chat: _chats[index]);
-                    },
-                  ),
+            child: _isLoadingChats 
+                ? const Center(child: CircularProgressIndicator())
+                : _chats.isEmpty
+                    ? _buildEmptyState()
+                    : RefreshIndicator(
+                        onRefresh: _loadChats,
+                        child: ListView.builder(
+                          itemCount: _chats.length,
+                          itemBuilder: (context, index) {
+                            return ChatListItem(chat: _chats[index]);
+                          },
+                        ),
+                      ),
           ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          // Открываем поиск пользователей при нажатии на кнопку
+          _navigationPanelKey.currentState?.toggleSearch();
+        },
+        child: const Icon(Icons.message),
       ),
     );
   }

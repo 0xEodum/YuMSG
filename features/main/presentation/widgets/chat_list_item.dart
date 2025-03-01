@@ -1,5 +1,7 @@
+// lib/features/main/presentation/widgets/chat_list_item.dart
 import 'package:flutter/material.dart';
-
+import '../../../../core/navigation/app_router.dart';
+import '../../../../core/navigation/route_arguments.dart';
 import '../../domain/models/chat_data.dart';
 
 class ChatListItem extends StatelessWidget {
@@ -14,7 +16,14 @@ class ChatListItem extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: () {
-        // TODO: Navigate to chat
+        // Переходим на экран чата при нажатии
+        Navigator.of(context).pushNamed(
+          AppRouter.chat,
+          arguments: ChatScreenArgs(
+            chatId: chat.id,
+            chatName: chat.name,
+          ),
+        );
       },
       child: Container(
         padding: const EdgeInsets.all(16),

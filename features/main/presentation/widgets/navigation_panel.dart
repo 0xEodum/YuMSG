@@ -4,30 +4,49 @@ import 'package:flutter/material.dart';
 import 'package:yumsg/core/data/providers/server_data_provider.dart';
 import 'package:yumsg/core/services/session/session_service.dart';
 import 'package:yumsg/features/main/domain/models/search_result.dart';
+import '../../../../core/navigation/app_router.dart';
+import '../../../../core/navigation/route_arguments.dart';
+import '../../../chat/domain/services/chat_service.dart';
 
 class NavigationPanel extends StatefulWidget {
   final VoidCallback onMenuPressed;
+  final GlobalKey<NavigationPanelState>? navigationPanelKey;
 
   const NavigationPanel({
     super.key,
     required this.onMenuPressed,
+    this.navigationPanelKey,
   });
 
   @override
-  State<NavigationPanel> createState() => _NavigationPanelState();
+  State<NavigationPanel> createState() => NavigationPanelState();
 }
 
-class _NavigationPanelState extends State<NavigationPanel> {
+class NavigationPanelState extends State<NavigationPanel> {
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
   final _sessionService = SessionService();
   final _serverProvider = ServerDataProvider.instance;
+  final _chatService = ChatService();
   
   Timer? _debounceTimer;
   bool _isSearchMode = false;
   bool _isLoading = false;
   String? _error;
   List<UserSearchItem>? _searchResults;
+
+  void toggleSearch() {
+    setState(() {
+      _isSearchMode = !_isSearchMode;
+      if (_isSearchMode) {
+        _searchFocusNode.requestFocus();
+      } else {
+        _searchController.clear();
+        _searchResults = null;
+        _error = null;
+      }
+    });
+  }
 
   @override
   void initState() {
@@ -204,12 +223,73 @@ class _NavigationPanelState extends State<NavigationPanel> {
                     ),
                   )
                 : null,
-            onTap: () {
-              // TODO: Инициировать чат с пользователем
-              _toggleSearch();
-            },
+            onTap: () => _handleUserSelected(user),
           );
         }).toList(),
+      ),
+    );
+  }
+
+  Future<void> _handleUserSelected(UserSearchItem user) async {
+    // Закрываем панель поиска
+    _toggleSearch();
+    
+    // Показываем индикатор загрузки
+    _showLoadingDialog();
+    
+    try {
+      // Получаем или создаем чат с выбранным пользователем
+      final chatId = await _chatService.openOrCreateChat(
+        user.id,
+        user.username,
+      );
+      
+      // Закрываем диалог загрузки
+      Navigator.of(context).pop();
+      
+      if (chatId == null) {
+        _showErrorSnackBar('Не удалось открыть чат');
+        return;
+      }
+      
+      // Переходим на экран чата
+      if (mounted) {
+        Navigator.of(context).pushNamed(
+          AppRouter.chat,
+          arguments: ChatScreenArgs(
+            chatId: chatId,
+            chatName: user.username,
+          ),
+        );
+      }
+    } catch (e) {
+      // Закрываем диалог загрузки
+      Navigator.of(context).pop();
+      _showErrorSnackBar('Ошибка при создании чата');
+    }
+  }
+  
+  void _showLoadingDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('Инициализация чата...'),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
       ),
     );
   }

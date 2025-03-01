@@ -146,10 +146,11 @@ class _SplashScreenState extends State<SplashScreen> {
 
   Future<void> _navigateToAuth() async {
     final workMode = await _sessionService.getWorkMode();
-    // Используем replaceTo вместо navigateToAndRemoveUntil
+    final actualWorkMode = workMode ?? WorkMode.server;
+    
     await _navigationService.replaceTo(
       AppRouter.auth,
-      arguments: AuthScreenArgs(workMode: workMode!),
+      arguments: AuthScreenArgs(workMode: actualWorkMode),
     );
   }
 

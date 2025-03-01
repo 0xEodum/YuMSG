@@ -25,18 +25,22 @@ class SessionService {
     _currentWorkMode = mode;
   }
 
-  Future<WorkMode?> getWorkMode() async {
-    if (_currentWorkMode != null) return _currentWorkMode;
+  Future<WorkMode> getWorkMode() async {
+    if (_currentWorkMode != null) return _currentWorkMode!;
     
     final prefs = await _prefs;
     final modeName = prefs.getString(_workModeKey);
     if (modeName != null) {
-      _currentWorkMode = WorkMode.values.firstWhere(
-        (mode) => mode.name == modeName
-      );
-      return _currentWorkMode;
+      try {
+        _currentWorkMode = WorkMode.values.firstWhere(
+          (mode) => mode.name == modeName
+        );
+        return _currentWorkMode!;
+      } catch (e) {
+        return WorkMode.server;
+      }
     }
-    return null;
+    return WorkMode.server; // Возвращаем WorkMode.server по умолчанию
   }
 
   // Методы для работы с адресом сервера
