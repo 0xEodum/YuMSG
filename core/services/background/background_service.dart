@@ -45,6 +45,22 @@ class BackgroundService {
       requestAlertPermission: false,
     );
     
+    // Создаем канал уведомлений для Android
+    const androidNotificationChannel = AndroidNotificationChannel(
+      _notificationChannelId,
+      _notificationChannelName,
+      importance: Importance.high,
+      enableVibration: false,
+      enableLights: false,
+      showBadge: false,
+    );
+    
+    // Регистрируем канал уведомлений
+    await notificationPlugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(androidNotificationChannel);
+    
     // Инициализация уведомлений
     await notificationPlugin.initialize(
       const InitializationSettings(
@@ -74,23 +90,27 @@ class BackgroundService {
   
   /// Запускает фоновый сервис.
   Future<void> start() async {
-    // Сначала проверяем, нужно ли запускать сервис
-    final sessionService = SessionService();
-    
-    // Проверяем режим работы
-    final workMode = await sessionService.getWorkMode();
-    if (workMode != WorkMode.server) {
-      return; // В локальном режиме не нужен фоновый сервис
+    try {
+      // Сначала проверяем, нужно ли запускать сервис
+      final sessionService = SessionService();
+      
+      // Проверяем режим работы
+      final workMode = await sessionService.getWorkMode();
+      if (workMode != WorkMode.server) {
+        return; // В локальном режиме не нужен фоновый сервис
+      }
+      
+      // Проверяем наличие сессии
+      final hasSession = await sessionService.hasFullSession();
+      if (!hasSession) {
+        return; // Нет полной сессии, сервис не нужен
+      }
+      
+      // Запускаем сервис
+      await _service.startService();
+    } catch (e) {
+      debugPrint('Error starting background service: $e');
     }
-    
-    // Проверяем наличие сессии
-    final hasSession = await sessionService.hasFullSession();
-    if (!hasSession) {
-      return; // Нет полной сессии, сервис не нужен
-    }
-    
-    // Запускаем сервис
-    await _service.startService();
   }
   
   /// Останавливает фоновый сервис.
@@ -119,8 +139,15 @@ void _onStart(ServiceInstance service) async {
   WidgetsFlutterBinding.ensureInitialized();
   DartPluginRegistrant.ensureInitialized();
   
-  // Для Android настраиваем сервис как foreground service
+  // Для Android настраиваем уведомление перед переводом в foreground режим
   if (service is AndroidServiceInstance) {
+    // Сначала устанавливаем информацию для уведомления
+    service.setForegroundNotificationInfo(
+      title: 'Мессенджер работает в фоне',
+      content: 'Вы получаете сообщения',
+    );
+    
+    // Только после настройки уведомления переводим сервис в foreground режим
     service.setAsForegroundService();
   }
   
@@ -165,21 +192,25 @@ void _onStart(ServiceInstance service) async {
   
   // Подписываемся на события чата
   webSocketService.onMessage.listen((chatMessage) {
-    // Обрабатываем сообщение
-    service.invoke('newMessage', {
-      'chatId': chatMessage.chatId,
-      'senderId': chatMessage.senderId,
-      'messageId': chatMessage.messageId,
-      'content': chatMessage.content,
-      'type': chatMessage.type,
-    });
-    
-    // Отправляем уведомление 
-    if (service is AndroidServiceInstance) {
-      service.setForegroundNotificationInfo(
-        title: 'Новое сообщение',
-        content: 'У вас новое сообщение',
-      );
+    try {
+      // Обрабатываем сообщение
+      service.invoke('newMessage', {
+        'chatId': chatMessage.chatId,
+        'senderId': chatMessage.senderId,
+        'messageId': chatMessage.messageId,
+        'content': chatMessage.content,
+        'type': chatMessage.type,
+      });
+      
+      // Обновляем уведомление при получении сообщения
+      if (service is AndroidServiceInstance) {
+        service.setForegroundNotificationInfo(
+          title: 'Новое сообщение',
+          content: 'У вас новое сообщение',
+        );
+      }
+    } catch (e) {
+      debugPrint('Error handling message in background service: $e');
     }
   });
   
@@ -222,13 +253,21 @@ Future<void> _connectWebSocket(
     }
     
     // Инициализируем ServerDataProvider, если еще не инициализирован
-    if (!ServerDataProvider.isInitialized) {
-      ServerDataProvider.initialize('http://$address');
+    try {
+      if (!ServerDataProvider.isInitialized) {
+        ServerDataProvider.initialize('http://$address');
+      }
+    } catch (e) {
+      debugPrint('Error initializing ServerDataProvider: $e');
     }
     
     // Подключаемся через WebSocket
-    await webSocketService.connect();
+    try {
+      await webSocketService.connect();
+    } catch (e) {
+      debugPrint('Error connecting WebSocket: $e');
+    }
   } catch (e) {
-    debugPrint('Error connecting WebSocket in background: $e');
+    debugPrint('Error in _connectWebSocket: $e');
   }
 }

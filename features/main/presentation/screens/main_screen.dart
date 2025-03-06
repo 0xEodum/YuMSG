@@ -145,21 +145,33 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
   
   Future<void> _initializeServices() async {
-    try {
-      // Инициализируем коммуникационный сервис
-      await _communicationService.initialize();
-      
-      // Инициализируем и запускаем фоновый сервис, если в серверном режиме
-      final workMode = await _sessionService.getWorkMode();
-      if (workMode == WorkMode.server) {
+  try {
+    // Инициализируем коммуникационный сервис
+    await _communicationService.initialize();
+    
+    // Инициализируем и запускаем фоновый сервис, если в серверном режиме
+    final workMode = await _sessionService.getWorkMode();
+    if (workMode == WorkMode.server) {
+      try {
+        // Разделяем инициализацию и запуск для лучшей обработки ошибок
         await _backgroundService.initialize();
-        await _backgroundService.start();
+        
+        try {
+          await _backgroundService.start();
+        } catch (e) {
+          debugPrint('Error starting background service: $e');
+          // Продолжаем работу даже если не удалось запустить фоновый сервис
+        }
+      } catch (e) {
+        debugPrint('Error initializing background service: $e');
+        // Продолжаем работу даже если не удалось инициализировать фоновый сервис
       }
-    } catch (e) {
-      // Ошибки инициализации не должны останавливать отображение UI
-      debugPrint('Error initializing services: $e');
     }
+  } catch (e) {
+    // Ошибки инициализации не должны останавливать отображение UI
+    debugPrint('Error initializing services: $e');
   }
+}
 
   void _handleWorkModeChange(WorkMode mode) async {
     setState(() {

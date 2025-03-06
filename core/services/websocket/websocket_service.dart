@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/status.dart' as status;
 import 'package:rxdart/rxdart.dart';
 import '../session/session_service.dart';
 import '../../data/providers/server_data_provider.dart';
@@ -59,23 +60,35 @@ class WebSocketService {
         throw Exception('Нет данных авторизации');
       }
 
-      final wsUrl = Uri.parse('${serverProvider.baseUrl.replaceFirst('http', 'ws')}/ws')
-          .replace(queryParameters: {
+      // Добавляем обработку потенциально некорректных URL
+      String wsUrl = '${serverProvider.baseUrl.replaceFirst('http', 'ws')}/ws';
+      if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
+        wsUrl = 'ws://${serverProvider.baseUrl.replaceAll('http://', '')}/ws';
+      }
+      
+      final uri = Uri.parse(wsUrl).replace(queryParameters: {
         'token': authData.accessToken,
       });
 
-      _channel = WebSocketChannel.connect(wsUrl);
+      debugPrint('Connecting to WebSocket: $uri');
       
-      // Устанавливаем обработчик входящих сообщений
-      _channel!.stream.listen(
-        _handleMessage,
-        onError: _handleError,
-        onDone: _handleDisconnect,
-        cancelOnError: true,
-      );
+      try {
+        _channel = WebSocketChannel.connect(uri);
+        
+        // Устанавливаем обработчик входящих сообщений
+        _channel!.stream.listen(
+          _handleMessage,
+          onError: _handleError,
+          onDone: _handleDisconnect,
+          cancelOnError: true,
+        );
 
-      _startPingTimer();
-      _onConnected.add(true);
+        _startPingTimer();
+        _onConnected.add(true);
+      } catch (e) {
+        debugPrint('Error creating WebSocket channel: $e');
+        throw e;
+      }
     } catch (e) {
       debugPrint('Error connecting to WebSocket: $e');
       _handleError(e);
@@ -121,6 +134,7 @@ class WebSocketService {
   void _handleError(dynamic error) {
     debugPrint('WebSocket error: $error');
     _onConnected.add(false);
+    _cleanupConnection();
     _scheduleReconnect();
   }
 
@@ -132,7 +146,11 @@ class WebSocketService {
   }
 
   void _cleanupConnection() {
-    _channel?.sink.close();
+    try {
+      _channel?.sink.close(status.goingAway);
+    } catch (e) {
+      debugPrint('Error closing WebSocket channel: $e');
+    }
     _channel = null;
     _pingTimer?.cancel();
     _pingTimer = null;
@@ -149,9 +167,14 @@ class WebSocketService {
     _pingTimer?.cancel();
     _pingTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
       if (isConnected) {
-        _channel!.sink.add(jsonEncode({
-          'type': 'ping',
-        }));
+        try {
+          _channel!.sink.add(jsonEncode({
+            'type': 'ping',
+          }));
+        } catch (e) {
+          debugPrint('Error sending ping: $e');
+          _handleError(e);
+        }
       }
     });
   }
@@ -178,13 +201,19 @@ class WebSocketService {
   Future<void> sendChatInitialization(String recipientId, String publicKey) async {
     if (!isConnected) throw Exception('WebSocket не подключен');
     
-    _channel!.sink.add(jsonEncode({
-      'type': 'chat.init',
-      'data': {
-        'recipientId': recipientId,
-        'publicKey': publicKey,
-      },
-    }));
+    try {
+      _channel!.sink.add(jsonEncode({
+        'type': 'chat.init',
+        'data': {
+          'recipientId': recipientId,
+          'publicKey': publicKey,
+        },
+      }));
+    } catch (e) {
+      debugPrint('Error sending chat initialization: $e');
+      _handleError(e);
+      throw e;
+    }
   }
 
   Future<void> sendKeyExchangeResponse(
@@ -194,14 +223,20 @@ class WebSocketService {
   ) async {
     if (!isConnected) throw Exception('WebSocket не подключен');
     
-    _channel!.sink.add(jsonEncode({
-      'type': 'chat.key_exchange',
-      'data': {
-        'chatId': chatId,
-        'publicKey': publicKey,
-        'encryptedPartialKey': encryptedPartialKey,
-      },
-    }));
+    try {
+      _channel!.sink.add(jsonEncode({
+        'type': 'chat.key_exchange',
+        'data': {
+          'chatId': chatId,
+          'publicKey': publicKey,
+          'encryptedPartialKey': encryptedPartialKey,
+        },
+      }));
+    } catch (e) {
+      debugPrint('Error sending key exchange response: $e');
+      _handleError(e);
+      throw e;
+    }
   }
 
   Future<void> sendKeyExchangeComplete(
@@ -210,13 +245,19 @@ class WebSocketService {
   ) async {
     if (!isConnected) throw Exception('WebSocket не подключен');
     
-    _channel!.sink.add(jsonEncode({
-      'type': 'chat.key_exchange_complete',
-      'data': {
-        'chatId': chatId,
-        'encryptedPartialKey': encryptedPartialKey,
-      },
-    }));
+    try {
+      _channel!.sink.add(jsonEncode({
+        'type': 'chat.key_exchange_complete',
+        'data': {
+          'chatId': chatId,
+          'encryptedPartialKey': encryptedPartialKey,
+        },
+      }));
+    } catch (e) {
+      debugPrint('Error sending key exchange complete: $e');
+      _handleError(e);
+      throw e;
+    }
   }
 
   Future<void> sendMessage(
@@ -227,15 +268,21 @@ class WebSocketService {
   }) async {
     if (!isConnected) throw Exception('WebSocket не подключен');
     
-    _channel!.sink.add(jsonEncode({
-      'type': 'chat.message',
-      'data': {
-        'chatId': chatId,
-        'content': content,
-        'type': type,
-        if (metadata != null) 'metadata': metadata,
-      },
-    }));
+    try {
+      _channel!.sink.add(jsonEncode({
+        'type': 'chat.message',
+        'data': {
+          'chatId': chatId,
+          'content': content,
+          'type': type,
+          if (metadata != null) 'metadata': metadata,
+        },
+      }));
+    } catch (e) {
+      debugPrint('Error sending message: $e');
+      _handleError(e);
+      throw e;
+    }
   }
 
   Future<void> sendMessageStatus(
@@ -245,14 +292,20 @@ class WebSocketService {
   ) async {
     if (!isConnected) throw Exception('WebSocket не подключен');
     
-    _channel!.sink.add(jsonEncode({
-      'type': 'chat.status',
-      'data': {
-        'messageId': messageId,
-        'chatId': chatId,
-        'status': status,
-        'timestamp': DateTime.now().toIso8601String(),
-      },
-    }));
+    try {
+      _channel!.sink.add(jsonEncode({
+        'type': 'chat.status',
+        'data': {
+          'messageId': messageId,
+          'chatId': chatId,
+          'status': status,
+          'timestamp': DateTime.now().toIso8601String(),
+        },
+      }));
+    } catch (e) {
+      debugPrint('Error sending message status: $e');
+      _handleError(e);
+      throw e;
+    }
   }
 }

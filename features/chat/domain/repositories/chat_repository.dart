@@ -144,4 +144,24 @@ class ChatRepository {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('$_keysPrefix$chatId');
   }
+
+  Future<void> deleteMessage(String messageId, String chatId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final messages = await getMessages(chatId);
+    
+    // Удаляем указанное сообщение
+    final filteredMessages = messages.where((m) => m.id != messageId).toList();
+    
+    // Сохраняем обновленный список сообщений
+    await prefs.setStringList(
+      '$_messagesPrefix$chatId',
+      filteredMessages.map((m) => jsonEncode(m.toJson())).toList(),
+    );
+  }
+
+  /// Удаляет все сообщения из указанного чата.
+  Future<void> deleteAllMessages(String chatId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('$_messagesPrefix$chatId');
+  }
 }

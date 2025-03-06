@@ -453,18 +453,162 @@ class ChatService {
   /// Получает ID текущего пользователя из сессии.
   Future<String> getCurrentUserId() async {
     try {
-      // В реальном приложении извлекаем из токена
+      // Получаем данные авторизации
       final authData = await _sessionService.getAuthData();
       if (authData == null) {
         throw Exception('Нет данных авторизации');
       }
 
-      // Здесь должен быть код для извлечения ID из токена
-      // Для демонстрации возвращаем фиксированный ID
-      return 'current-user-id';
+      // Извлекаем полезную нагрузку из JWT токена
+      final payload = _decodeJwtPayload(authData.accessToken);
+
+      // Извлекаем ID пользователя из стандартного поля sub
+      if (payload.containsKey('sub')) {
+        return payload['sub'] as String;
+      }
+
+      throw Exception(
+          'Не удалось извлечь ID пользователя из токена: поле "sub" отсутствует');
     } catch (e) {
       debugPrint('Error getting current user ID: $e');
-      return 'current-user-id'; // Временное значение для тестирования
+      // В случае ошибки возвращаем временный ID для предотвращения сбоев UI
+      return 'unknown-user';
+    }
+  }
+
+  /// Декодирует полезную нагрузку из JWT токена.
+  Map<String, dynamic> _decodeJwtPayload(String token) {
+    try {
+      // JWT состоит из трёх частей, разделенных точками: header.payload.signature
+      final parts = token.split('.');
+      if (parts.length != 3) {
+        throw Exception('Некорректная структура JWT токена');
+      }
+
+      // Декодируем Base64Url средней части (payload)
+      String normalizedPayload = parts[1];
+      // Дополняем строку, если её длина не кратна 4
+      normalizedPayload = base64Url.normalize(normalizedPayload);
+
+      // Декодируем Base64 в строку и затем парсим JSON
+      final payloadString = utf8.decode(base64Url.decode(normalizedPayload));
+      return jsonDecode(payloadString) as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint('Error decoding JWT: $e');
+      return {};
+    }
+  }
+
+  Future<bool> checkEncryptionStatus(String chatId) async {
+    try {
+      final chatKey = await _chatRepository.getChatKeys(chatId);
+      return chatKey != null && chatKey.isComplete;
+    } catch (e) {
+      debugPrint('Error checking encryption status: $e');
+      return false;
+    }
+  }
+
+  /// Очищает историю сообщений указанного чата.
+  Future<void> clearChatHistory(String chatId) async {
+    try {
+      // Получаем текущий чат
+      final chat = await _chatRepository.getChat(chatId);
+      if (chat == null) {
+        throw Exception('Чат не найден');
+      }
+
+      // Получаем все сообщения чата
+      final messages = await _chatRepository.getMessages(chatId);
+
+      // Удаляем сообщения по одному
+      for (final message in messages) {
+        await _chatRepository.deleteMessage(message.id, chatId);
+      }
+
+      // Обновляем информацию о последнем сообщении
+      await _chatRepository.saveChat(
+        chat.copyWith(
+          lastMessage: 'История чата очищена',
+          lastMessageTime: DateTime.now(),
+          unreadCount: 0,
+        ),
+      );
+
+      // Обновляем список чатов
+      _loadChats();
+    } catch (e) {
+      debugPrint('Error clearing chat history: $e');
+      throw Exception('Не удалось очистить историю чата: ${e.toString()}');
+    }
+  }
+
+  /// Удаляет чат полностью.
+  Future<void> deleteChat(String chatId) async {
+    try {
+      // Удаляем сообщения
+      await _chatRepository.deleteAllMessages(chatId);
+
+      // Удаляем ключи шифрования
+      await _chatRepository.deleteChatKeys(chatId);
+
+      // Удаляем сам чат
+      await _chatRepository.deleteChat(chatId);
+
+      // Обновляем список чатов
+      _loadChats();
+    } catch (e) {
+      debugPrint('Error deleting chat: $e');
+      throw Exception('Не удалось удалить чат: ${e.toString()}');
+    }
+  }
+
+  /// Повторно инициализирует чат (пересоздает ключи шифрования).
+  Future<void> reinitializeChat(String chatId) async {
+    try {
+      // Получаем информацию о чате
+      final chat = await _chatRepository.getChat(chatId);
+      if (chat == null) {
+        throw Exception('Чат не найден');
+      }
+
+      // Удаляем текущие ключи
+      await _chatRepository.deleteChatKeys(chatId);
+
+      // Обновляем статус чата на "не инициализирован"
+      await _chatRepository.saveChat(
+        chat.copyWith(isInitialized: false),
+      );
+
+      // Если это серверный режим, инициируем новый обмен ключами
+      if (_communicationService.isConnected) {
+        // Генерируем новую пару ключей
+        final keyPair = await _cryptoService.generateKeyPair();
+
+        // Отправляем запрос на инициализацию чата
+        await _webSocketService.sendChatInitialization(
+          chat.participantId,
+          keyPair.publicKey,
+        );
+
+        // Сохраняем временные данные ключей
+        await _chatRepository.saveChatKeys(
+          ChatKey(
+            chatId: chatId,
+            userId: chat.participantId,
+            publicKey: keyPair.publicKey,
+            privateKey: keyPair.privateKey,
+            partialKey: await _cryptoService.generateRandomBytes(32),
+            isComplete: false,
+          ),
+        );
+      }
+
+      // Обновляем список чатов
+      _loadChats();
+    } catch (e) {
+      debugPrint('Error reinitializing chat: $e');
+      throw Exception('Не удалось пересоздать ключи: ${e.toString()}');
     }
   }
 
