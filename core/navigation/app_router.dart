@@ -28,8 +28,13 @@ class AppRouter {
   ];
 
   static Route<dynamic> generateRoute(RouteSettings settings) {
+    // Добавление логирования для отладки
+    debugPrint('AppRouter: Navigating to ${settings.name}');
+    debugPrint('AppRouter: Arguments: ${settings.arguments}');
+    
     // Check for required arguments
     if (_routesRequiringArgs.contains(settings.name) && settings.arguments == null) {
+      debugPrint('AppRouter: ERROR - Route ${settings.name} requires arguments');
       return _errorRoute('Route ${settings.name} requires arguments');
     }
 
@@ -45,6 +50,7 @@ class AppRouter {
         
       case auth:
         if (settings.arguments is! AuthScreenArgs) {
+          debugPrint('AppRouter: ERROR - AuthScreen requires AuthScreenArgs but got ${settings.arguments.runtimeType}');
           return _errorRoute(
             'AuthScreen requires AuthScreenArgs but got ${settings.arguments.runtimeType}'
           );
@@ -58,18 +64,25 @@ class AppRouter {
         return MaterialPageRoute(builder: (_) => const MainScreen());
 
       case chat:
-        if (settings.arguments is! ChatScreenArgs) {
-          return _errorRoute(
-            'ChatScreen requires ChatScreenArgs but got ${settings.arguments.runtimeType}'
+        try {
+          if (settings.arguments is! ChatScreenArgs) {
+            debugPrint('AppRouter: ERROR - ChatScreen requires ChatScreenArgs but got ${settings.arguments.runtimeType}');
+            return _errorRoute(
+              'ChatScreen requires ChatScreenArgs but got ${settings.arguments.runtimeType}'
+            );
+          }
+          final args = settings.arguments as ChatScreenArgs;
+          debugPrint('AppRouter: Creating route to chat screen with chatId: ${args.chatId}, name: ${args.chatName}');
+          return MaterialPageRoute(
+            builder: (_) => ChatScreen(
+              chatId: args.chatId,
+              participantName: args.chatName,
+            ),
           );
+        } catch (e) {
+          debugPrint('AppRouter: ERROR creating chat route - $e');
+          return _errorRoute('Error creating chat route: $e');
         }
-        final args = settings.arguments as ChatScreenArgs;
-        return MaterialPageRoute(
-          builder: (_) => ChatScreen(
-            chatId: args.chatId,
-            participantName: args.chatName,
-          ),
-        );
 
       case profile:
         return MaterialPageRoute(
@@ -96,6 +109,7 @@ class AppRouter {
         );
 
       default:
+        debugPrint('AppRouter: ERROR - Route ${settings.name} not found');
         return _errorRoute('Route ${settings.name} not found');
     }
   }

@@ -35,6 +35,8 @@ class NavigationPanelState extends State<NavigationPanel> {
   String? _error;
   List<UserSearchItem>? _searchResults;
 
+  bool get isSearchMode => _isSearchMode;
+
   void toggleSearch() {
     setState(() {
       _isSearchMode = !_isSearchMode;
@@ -131,130 +133,62 @@ class NavigationPanelState extends State<NavigationPanel> {
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: widget.onMenuPressed,
-          ),
-          title: _isSearchMode
-              ? TextField(
-                  controller: _searchController,
-                  focusNode: _searchFocusNode,
-                  decoration: InputDecoration(
-                    hintText: 'Поиск пользователей...',
-                    border: InputBorder.none,
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: _toggleSearch,
-                    ),
-                  ),
-                  onChanged: _handleSearchChanged,
-                )
-              : const Text('Чаты'),
-          actions: [
-            if (!_isSearchMode)
-              IconButton(
-                icon: const Icon(Icons.search),
-                onPressed: _toggleSearch,
-              ),
-          ],
-        ),
-        if (_isSearchMode) _buildSearchResults(),
-      ],
-    );
-  }
-
-  Widget _buildSearchResults() {
-    if (_isLoading) {
-      return const Padding(
-        padding: EdgeInsets.all(16.0),
-        child: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-
-    if (_error != null) {
-      return Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Text(
-          _error!,
-          style: const TextStyle(color: Colors.red),
-        ),
-      );
-    }
-
-    if (_searchResults == null || _searchResults!.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.all(16.0),
-        child: Text('Нет результатов'),
-      );
-    }
-
-    return Container(
-      color: Colors.white,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: _searchResults!.map((user) {
-          return ListTile(
-            leading: CircleAvatar(
-              backgroundImage: user.avatarUrl != null
-                  ? NetworkImage(user.avatarUrl!)
-                  : null,
-              child: user.avatarUrl == null ? Text(user.username[0]) : null,
-            ),
-            title: Text(user.username),
-            trailing: user.isOnline
-                ? Container(
-                    width: 12,
-                    height: 12,
-                    decoration: BoxDecoration(
-                      color: Colors.green,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: Colors.white,
-                        width: 2,
-                      ),
-                    ),
-                  )
-                : null,
-            onTap: () => _handleUserSelected(user),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  Future<void> _handleUserSelected(UserSearchItem user) async {
+  // Обработчик нажатия на пользователя из результатов поиска
+  Future<void> handleUserSelected(UserSearchItem user) async {
+    print('User selected: ${user.username}'); // Отладочный вывод
+    
     // Закрываем панель поиска
     _toggleSearch();
     
+    // Создаем BuildContext переменную для сохранения контекста
+    final currentContext = context;
+    
     // Показываем индикатор загрузки
-    _showLoadingDialog();
+    showDialog(
+      context: currentContext,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        content: Row(
+          children: const [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('Инициализация чата...'),
+          ],
+        ),
+      ),
+    );
     
     try {
+      print('Calling openOrCreateChat'); // Отладочный вывод
+      
       // Получаем или создаем чат с выбранным пользователем
       final chatId = await _chatService.openOrCreateChat(
         user.id,
         user.username,
       );
       
-      // Закрываем диалог загрузки
-      Navigator.of(context).pop();
+      print('Chat ID received: $chatId'); // Отладочный вывод
+      
+      // Закрываем диалог загрузки 
+      if (Navigator.canPop(currentContext)) {
+        Navigator.of(currentContext).pop();
+      }
       
       if (chatId == null) {
-        _showErrorSnackBar('Не удалось открыть чат');
+        print('Chat ID is null'); // Отладочный вывод
+        ScaffoldMessenger.of(currentContext).showSnackBar(
+          const SnackBar(
+            content: Text('Не удалось открыть чат'),
+            backgroundColor: Colors.red,
+          ),
+        );
         return;
       }
       
       // Переходим на экран чата
       if (mounted) {
-        Navigator.of(context).pushNamed(
+        print('Navigating to chat screen'); // Отладочный вывод
+        Navigator.of(currentContext).pushNamed(
           AppRouter.chat,
           arguments: ChatScreenArgs(
             chatId: chatId,
@@ -263,33 +197,185 @@ class NavigationPanelState extends State<NavigationPanel> {
         );
       }
     } catch (e) {
-      // Закрываем диалог загрузки
-      Navigator.of(context).pop();
-      _showErrorSnackBar('Ошибка при создании чата');
+      print('Error handling user selection: $e'); // Отладочный вывод
+      
+      // Закрываем диалог загрузки, если он показан
+      if (Navigator.canPop(currentContext)) {
+        Navigator.of(currentContext).pop();
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(currentContext).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка при создании чата: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
-  
-  void _showLoadingDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 16),
-            Text('Инициализация чата...'),
-          ],
-        ),
+
+  @override
+  Widget build(BuildContext context) {
+    return AppBar(
+      leading: IconButton(
+        icon: const Icon(Icons.menu),
+        onPressed: widget.onMenuPressed,
       ),
+      title: _isSearchMode
+          ? TextField(
+              controller: _searchController,
+              focusNode: _searchFocusNode,
+              decoration: InputDecoration(
+                hintText: 'Поиск пользователей...',
+                border: InputBorder.none,
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: _toggleSearch,
+                ),
+              ),
+              onChanged: _handleSearchChanged,
+            )
+          : const Text('Чаты'),
+      actions: [
+        if (!_isSearchMode)
+          IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: _toggleSearch,
+          ),
+      ],
     );
   }
-  
-  void _showErrorSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
+
+  // Создает виджет с результатами поиска
+  Widget buildSearchResults() {
+    if (_isLoading) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24.0),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_error != null) {
+      return Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              'Ошибка при поиске',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.red[700],
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              style: TextStyle(color: Colors.red[700]),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_searchResults == null || _searchResults!.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(24.0),
+        child: Center(
+          child: Text(
+            'Нет результатов',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(8),
+      child: ListView.separated(
+        shrinkWrap: true,
+        padding: EdgeInsets.zero,
+        itemCount: _searchResults!.length,
+        separatorBuilder: (context, index) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final user = _searchResults![index];
+          return InkWell(
+            onTap: () {
+              print("Tapped on user ${user.username}");
+              handleUserSelected(user);
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundImage: user.avatarUrl != null
+                        ? NetworkImage(user.avatarUrl!)
+                        : null,
+                    child: user.avatarUrl == null
+                        ? Text(
+                            user.username[0].toUpperCase(),
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          )
+                        : null,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          user.username,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          user.isOnline ? 'В сети' : 'Не в сети',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: user.isOnline ? Colors.green : Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (user.isOnline)
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: Colors.green,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }

@@ -61,22 +61,61 @@ class ChatService {
   /// Инициирует новый чат с указанным пользователем.
   Future<String?> initializeChat(String recipientId) async {
     try {
+      debugPrint('initializeChat: Starting initialization with recipientId: $recipientId');
+      
+      // Проверяем, есть ли соединение
+      if (!_communicationService.isConnected) {
+        debugPrint('initializeChat: WebSocket not connected, cannot initialize chat');
+        throw Exception('WebSocket не подключен, невозможно инициализировать чат');
+      }
+      
       // Генерируем пару ключей для чата
+      debugPrint('initializeChat: Generating key pair...');
       final keyPair = await _cryptoService.generateKeyPair();
+      debugPrint('initializeChat: Key pair generated successfully');
+      
+      // Создаем временный chatId
+      final temporaryChatId = '$recipientId-${DateTime.now().millisecondsSinceEpoch}';
+      debugPrint('initializeChat: Generated temporary chatId: $temporaryChatId');
 
-      // Отправляем публичный ключ через WebSocket
-      await _webSocketService.sendChatInitialization(
-        recipientId,
-        keyPair.publicKey,
+      // Создаем и сохраняем временные ключи перед отправкой запроса
+      debugPrint('initializeChat: Saving temporary keys');
+      final temporaryKey = await _cryptoService.generateRandomBytes(32);
+      await _chatRepository.saveChatKeys(
+        ChatKey(
+          chatId: temporaryChatId,
+          userId: recipientId,
+          publicKey: keyPair.publicKey,
+          privateKey: keyPair.privateKey,
+          partialKey: temporaryKey,
+          isComplete: false,
+        ),
       );
+      debugPrint('initializeChat: Temporary keys saved');
+      
+      // Отправляем публичный ключ через WebSocket
+      debugPrint('initializeChat: Sending chat initialization via WebSocket');
+      try {
+        await _webSocketService.sendChatInitialization(
+          recipientId,
+          keyPair.publicKey,
+        );
+        debugPrint('initializeChat: Initialization request sent successfully');
+      } catch (e) {
+        debugPrint('initializeChat: Error sending initialization request: $e');
+        // Удаляем ключи, если не удалось отправить запрос
+        await _chatRepository.deleteChatKeys(temporaryChatId);
+        throw Exception('Не удалось отправить запрос инициализации: $e');
+      }
 
-      // Сохраняем ключи в ожидании ответа
-      // В реальном приложении нужно добавить проверку на timeout
-
-      // Возвращаем temporary chatId (это можно улучшить)
-      return '$recipientId-${DateTime.now().millisecondsSinceEpoch}';
+      // В реальном приложении здесь стоило бы ожидать подтверждения
+      // через обработку события "chat.init.confirm" в потоке событий
+      
+      debugPrint('initializeChat: Completed successfully, returning chatId: $temporaryChatId');
+      return temporaryChatId;
     } catch (e) {
-      debugPrint('Error initializing chat: $e');
+      debugPrint('initializeChat: Error initializing chat: $e');
+      debugPrintStack();
       return null;
     }
   }
@@ -714,23 +753,31 @@ class ChatService {
   /// Открывает существующий чат или создает новый с пользователем.
   Future<String?> openOrCreateChat(String userId, String userName) async {
     try {
+      debugPrint('openOrCreateChat: Starting for user $userId ($userName)');
+      
       // Пытаемся найти существующий чат с пользователем
       final chats = await getChats();
+      debugPrint('openOrCreateChat: Loaded ${chats.length} existing chats');
 
       final existingChat =
           chats.where((chat) => chat.participantId == userId).firstOrNull;
 
       if (existingChat != null) {
+        debugPrint('openOrCreateChat: Found existing chat with ID: ${existingChat.id}');
         return existingChat.id;
       }
 
       // Если чат не найден, инициируем новый
+      debugPrint('openOrCreateChat: No existing chat found, initializing new chat');
       final chatId = await initializeChat(userId);
 
       if (chatId == null) {
+        debugPrint('openOrCreateChat: Failed to initialize chat, returned null chatId');
         throw Exception('Не удалось создать чат');
       }
 
+      debugPrint('openOrCreateChat: Chat initialized with ID: $chatId');
+      
       // Создаем локальную запись о чате
       final newChat = Chat(
         id: chatId,
@@ -741,14 +788,18 @@ class ChatService {
         isInitialized: false,
       );
 
+      debugPrint('openOrCreateChat: Saving new chat to repository');
       await _chatRepository.saveChat(newChat);
+      debugPrint('openOrCreateChat: Chat saved successfully');
 
       // Обновляем список чатов
       _loadChats();
+      debugPrint('openOrCreateChat: Chat list refreshed');
 
       return chatId;
     } catch (e) {
-      debugPrint('Error opening or creating chat: $e');
+      debugPrint('openOrCreateChat: Error opening or creating chat: $e');
+      debugPrintStack();
       return null;
     }
   }
