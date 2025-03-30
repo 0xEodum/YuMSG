@@ -8,6 +8,7 @@ import 'package:yumsg/features/chat/domain/services/message_queue_service.dart';
 import 'package:yumsg/features/chat/presentation/screens/chat_info_screen.dart';
 import '../../domain/models/chat_message.dart';
 import '../../domain/services/chat_service.dart';
+import '../../domain/managers/chat_manager.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/message_input.dart';
 
@@ -27,6 +28,7 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final ChatService _chatService = ChatService();
+  final ChatManager _chatManager = ChatManager();
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _messageController = TextEditingController();
   final FocusNode _inputFocusNode = FocusNode();
@@ -41,6 +43,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isLoadingMore = false;
   bool _hasMoreMessages = true;
   String? _currentUserId;
+  String? _recipientId;
 
   // Для пагинации
   static const int _pageSize = 20;
@@ -52,6 +55,11 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    // Извлекаем ID получателя из ID чата (формат: chat_with_recipientId)
+    if (widget.chatId.startsWith('chat_with_')) {
+      _recipientId = widget.chatId.substring('chat_with_'.length);
+    }
+    
     _initialize();
 
     // Добавляем слушатель для загрузки предыдущих сообщений при скролле
@@ -77,6 +85,19 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _initialize() async {
+    if (_recipientId == null) {
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ошибка: некорректный ID чата'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    
     // Получение ID текущего пользователя
     _currentUserId = await _chatService.getCurrentUserId();
 
@@ -94,7 +115,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-// Добавляем метод для обновления счетчика ожидающих сообщений
   Future<void> _updatePendingMessageCount() async {
     try {
       final count = await _messageQueueService.getPendingMessageCount();
@@ -118,6 +138,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadMessages() async {
+    if (_recipientId == null) return;
+    
     if (mounted) {
       setState(() {
         _isLoading = true;
@@ -127,7 +149,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       // Загрузка сообщений с пагинацией
       final messages = await _chatService.getMessages(
-        widget.chatId,
+        _recipientId!,
         page: 1,
         pageSize: _pageSize,
       );
@@ -155,12 +177,14 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isLoading = false;
         });
-        _showErrorSnackBar('Не удалось загрузить сообщения');
+        _showErrorSnackBar('Не удалось загрузить сообщения: ${e.toString()}');
       }
     }
   }
 
   Future<void> _loadMoreMessages() async {
+    if (_recipientId == null) return;
+    
     if (_isLoadingMore || !_hasMoreMessages) return;
 
     if (mounted) {
@@ -173,7 +197,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // Загрузка следующей страницы сообщений
       final nextPage = _currentPage + 1;
       final olderMessages = await _chatService.getMessages(
-        widget.chatId,
+        _recipientId!,
         page: nextPage,
         pageSize: _pageSize,
       );
@@ -198,14 +222,16 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isLoadingMore = false;
         });
-        _showErrorSnackBar('Не удалось загрузить предыдущие сообщения');
+        _showErrorSnackBar('Не удалось загрузить предыдущие сообщения: ${e.toString()}');
       }
     }
   }
 
   void _handleNewMessage(ChatMessage message) {
+    if (_recipientId == null) return;
+    
     // Проверяем, принадлежит ли сообщение этому чату
-    if (message.chatId != widget.chatId) return;
+    if (!message.chatId.contains(_recipientId!)) return;
 
     // Проверяем, нет ли уже этого сообщения в списке
     if (_messages.any((m) => m.id == message.id)) return;
@@ -242,6 +268,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _handleSendMessage() async {
+    if (_recipientId == null) {
+      _showErrorSnackBar('Не удалось определить получателя сообщения');
+      return;
+    }
+    
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
@@ -250,7 +281,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     try {
       // Отправляем сообщение
-      await _chatService.sendMessage(widget.chatId, text);
+      await _chatService.sendMessage(_recipientId!, text);
 
       // Обновляем счетчик ожидающих сообщений, если нет соединения
       if (!_communicationService.isConnected) {
@@ -260,7 +291,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // Прокручиваем к новому сообщению
       _scrollToBottom();
     } catch (e) {
-      _showErrorSnackBar('Не удалось отправить сообщение');
+      _showErrorSnackBar('Не удалось отправить сообщение: ${e.toString()}');
     }
   }
 
@@ -284,10 +315,15 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showChatInfo() {
+    if (_recipientId == null) {
+      _showErrorSnackBar('Не удалось определить ID получателя');
+      return;
+    }
+    
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => ChatInfoScreen(
-          chatId: widget.chatId,
+          recipientId: _recipientId!,
           participantName: widget.participantName,
         ),
       ),

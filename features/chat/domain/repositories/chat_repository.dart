@@ -27,6 +27,25 @@ class ChatRepository {
     return chats.where((chat) => chat.id == chatId).firstOrNull;
   }
   
+  /// Проверяет существование чата по ID.
+  Future<bool> chatExists(String chatId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final chatsJson = prefs.getStringList(_chatsKey) ?? [];
+    
+    for (final jsonStr in chatsJson) {
+      try {
+        final chat = Chat.fromJson(jsonDecode(jsonStr));
+        if (chat.id == chatId) {
+          return true;
+        }
+      } catch (e) {
+        // Игнорируем ошибки десериализации
+      }
+    }
+    
+    return false;
+  }
+  
   /// Сохраняет чат в хранилище.
   Future<void> saveChat(Chat chat) async {
     final prefs = await SharedPreferences.getInstance();
@@ -88,9 +107,13 @@ class ChatRepository {
     for (final key in messageKeys) {
       final messagesJson = prefs.getStringList(key) ?? [];
       for (final jsonStr in messagesJson) {
-        final message = ChatMessage.fromJson(jsonDecode(jsonStr));
-        if (message.id == messageId) {
-          return message;
+        try {
+          final message = ChatMessage.fromJson(jsonDecode(jsonStr));
+          if (message.id == messageId) {
+            return message;
+          }
+        } catch (e) {
+          // Игнорируем ошибки десериализации
         }
       }
     }
@@ -126,7 +149,12 @@ class ChatRepository {
     
     if (keyJson == null) return null;
     
-    return ChatKey.fromJson(jsonDecode(keyJson));
+    try {
+      return ChatKey.fromJson(jsonDecode(keyJson));
+    } catch (e) {
+      // Возвращаем null в случае ошибки десериализации
+      return null;
+    }
   }
   
   /// Сохраняет ключи чата в хранилище.
@@ -145,6 +173,7 @@ class ChatRepository {
     await prefs.remove('$_keysPrefix$chatId');
   }
 
+  /// Удаляет сообщение из хранилища.
   Future<void> deleteMessage(String messageId, String chatId) async {
     final prefs = await SharedPreferences.getInstance();
     final messages = await getMessages(chatId);

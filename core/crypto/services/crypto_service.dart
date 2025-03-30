@@ -34,10 +34,11 @@ class YuCryptoService {
     }
   }
 
-  Future<String> decryptAsymmetric(String encryptedData, String privateKey) async {
+  Future<String> decryptAsymmetric(String encryptedData, String privateKey, {bool asBase64 = true}) async {
   try {
     print('Starting asymmetric decryption...');
     print('Encrypted data length: ${encryptedData.length}');
+    print('Return as base64: $asBase64');
     
     final rsaPrivateKey = _decodeRSAPrivateKey(privateKey);
     print('Private key decoded');
@@ -47,13 +48,25 @@ class YuCryptoService {
     
     try {
       final decryptedBytes = CryptoUtils.rsaDecrypt(rsaPrivateKey, encryptedBytes);
-      print('Data decrypted successfully');
+      print('Data decrypted successfully, length: ${decryptedBytes.length}');
       
-      // Вместо преобразования в UTF-8 строку, кодируем байты в base64
-      final result = base64.encode(decryptedBytes);
-      print('Decrypted data encoded to base64 successfully');
-      
-      return result;
+      if (asBase64) {
+        // Возвращаем как base64 для бинарных данных (сессионные ключи)
+        final result = base64.encode(decryptedBytes);
+        print('Decrypted data encoded to base64 successfully');
+        return result;
+      } else {
+        try {
+          // Пытаемся декодировать как UTF-8 для текстовых данных
+          final result = utf8.decode(decryptedBytes);
+          print('Decrypted data decoded as UTF-8 successfully');
+          return result;
+        } catch (e) {
+          // Если не UTF-8, все равно возвращаем как base64
+          print('Warning: Could not decode as UTF-8, falling back to base64');
+          return base64.encode(decryptedBytes);
+        }
+      }
     } catch (e, stackTrace) {
       print('Error during RSA decryption: $e');
       print('Stack trace: $stackTrace');

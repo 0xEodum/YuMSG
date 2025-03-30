@@ -36,16 +36,23 @@ class ChatListItem extends StatelessWidget {
         ),
         child: Row(
           children: [
+            // Аватар (если есть) или первая буква имени
             CircleAvatar(
               radius: 24,
-              backgroundColor: Colors.grey[300],
-              child: Text(
-                chat.name[0],
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              backgroundColor: Colors.blue.shade100,
+              backgroundImage: chat.avatarUrl != null
+                  ? NetworkImage(chat.avatarUrl!)
+                  : null,
+              child: chat.avatarUrl == null
+                  ? Text(
+                      chat.name.isNotEmpty ? chat.name[0].toUpperCase() : '?',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                      ),
+                    )
+                  : null,
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -55,11 +62,14 @@ class ChatListItem extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        chat.name,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
+                      Flexible(
+                        child: Text(
+                          chat.name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       Text(

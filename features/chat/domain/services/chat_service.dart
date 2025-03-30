@@ -4,12 +4,10 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:rxdart/rxdart.dart';
-import 'package:yumsg/core/services/communication/communication_service.dart';
-import 'package:yumsg/core/services/communication/connection_state.dart';
-import 'package:yumsg/features/chat/domain/services/message_queue_service.dart';
+import '../../../../core/services/communication/communication_service.dart';
+import '../../../../core/services/communication/connection_state.dart';
+import '../services/message_queue_service.dart';
 import '../../../../core/crypto/services/crypto_service.dart';
-import '../../../../core/crypto/services/server_secure_channel.dart';
-import '../../../../core/crypto/models/key_pair.dart';
 import '../../../../core/services/session/session_service.dart';
 import '../../../../core/services/websocket/websocket_service.dart';
 import '../../../../core/services/websocket/websocket_event.dart';
@@ -17,6 +15,7 @@ import '../models/chat.dart';
 import '../models/chat_key.dart';
 import '../models/chat_message.dart';
 import '../repositories/chat_repository.dart';
+import '../managers/chat_manager.dart';
 
 /// Сервис для управления чатами, обработки сообщений и обмена ключами.
 class ChatService {
@@ -28,6 +27,7 @@ class ChatService {
   final SessionService _sessionService = SessionService();
   final ChatRepository _chatRepository = ChatRepository();
   final CommunicationService _communicationService = CommunicationService();
+  final ChatManager _chatManager = ChatManager();
 
   // Потоки для публикации событий
   final _messageSubject = PublishSubject<ChatMessage>();
@@ -38,14 +38,18 @@ class ChatService {
 
   ChatService._internal() {
     // Инициализируем обработчики WebSocket событий
-    _webSocketService.onChatInit.listen(_handleChatInitialization);
-    _webSocketService.onKeyExchange.listen(_handleKeyExchange);
-    _webSocketService.onKeyExchangeComplete.listen(_handleKeyExchangeComplete);
-    _webSocketService.onMessage.listen(_handleIncomingMessage);
-    _webSocketService.onMessageStatus.listen(_handleMessageStatus);
+    _webSocketService.onChatInit.listen(_handleChatInitEvent);
+    _webSocketService.onKeyExchange.listen(_handleKeyExchangeEvent);
+    _webSocketService.onKeyExchangeComplete.listen(_handleKeyExchangeCompleteEvent);
+    _webSocketService.onMessage.listen(_handleMessageEvent);
+    _webSocketService.onMessageStatus.listen(_handleMessageStatusEvent);
+    _webSocketService.onChatDelete.listen(_handleChatDeleteEvent);
 
     // Загружаем чаты из хранилища при старте
     _loadChats();
+    
+    // Мигрируем старые чаты на новый формат
+    _chatManager.migrateChats();
   }
 
   /// Загружает список чатов из локального хранилища.
@@ -59,7 +63,7 @@ class ChatService {
   }
 
   /// Инициирует новый чат с указанным пользователем.
-  Future<String?> initializeChat(String recipientId) async {
+  Future<String?> initializeChat(String recipientId, String recipientName) async {
     try {
       debugPrint('initializeChat: Starting initialization with recipientId: $recipientId');
       
@@ -69,50 +73,72 @@ class ChatService {
         throw Exception('WebSocket не подключен, невозможно инициализировать чат');
       }
       
-      // Генерируем пару ключей для чата
+      // Проверяем, был ли чат удален пользователем
+      if (await _chatManager.isChatWithUserDeleted(recipientId)) {
+        // Если да, снимаем пометку удаления
+        await _chatManager.clearDeletedChatMark(recipientId);
+      }
+      
+      // Получаем свой локальный ID чата
+      final chatId = _chatManager.generateChatId(recipientId);
+      
+      // Проверяем существование чата
+      if (await _chatManager.hasChatWithUser(recipientId)) {
+        debugPrint('initializeChat: Chat already exists with user $recipientId');
+        return chatId;
+      }
+      
       debugPrint('initializeChat: Generating key pair...');
+      
+      // Генерируем пару ключей для чата
       final keyPair = await _cryptoService.generateKeyPair();
       debugPrint('initializeChat: Key pair generated successfully');
       
-      // Создаем временный chatId
-      final temporaryChatId = '$recipientId-${DateTime.now().millisecondsSinceEpoch}';
-      debugPrint('initializeChat: Generated temporary chatId: $temporaryChatId');
-
-      // Создаем и сохраняем временные ключи перед отправкой запроса
-      debugPrint('initializeChat: Saving temporary keys');
-      final temporaryKey = await _cryptoService.generateRandomBytes(32);
+      // Генерируем частичный ключ
+      final partialKey = await _cryptoService.generateRandomBytes(32);
+      
+      // Создаем и сохраняем ключи перед отправкой запроса
       await _chatRepository.saveChatKeys(
         ChatKey(
-          chatId: temporaryChatId,
+          chatId: chatId,
           userId: recipientId,
           publicKey: keyPair.publicKey,
           privateKey: keyPair.privateKey,
-          partialKey: temporaryKey,
+          partialKey: partialKey,
           isComplete: false,
         ),
       );
-      debugPrint('initializeChat: Temporary keys saved');
+      debugPrint('initializeChat: Keys saved to repository');
       
-      // Отправляем публичный ключ через WebSocket
-      debugPrint('initializeChat: Sending chat initialization via WebSocket');
+      // Создаем чат в локальном хранилище
+      final chat = await _chatManager.getOrCreateChatWithUser(
+        recipientId, 
+        recipientName,
+        isInitialized: false
+      );
+      debugPrint('initializeChat: Chat created and saved');
+      
+      // Получаем свое имя пользователя для отправки инициатору
+      final myUsername = await _getUsername();
+      
       try {
-        await _webSocketService.sendChatInitialization(
+        // Отправляем инициализацию через WebSocket
+        await _webSocketService.sendChatInit(
           recipientId,
+          myUsername,
           keyPair.publicKey,
         );
         debugPrint('initializeChat: Initialization request sent successfully');
       } catch (e) {
         debugPrint('initializeChat: Error sending initialization request: $e');
-        // Удаляем ключи, если не удалось отправить запрос
-        await _chatRepository.deleteChatKeys(temporaryChatId);
         throw Exception('Не удалось отправить запрос инициализации: $e');
       }
-
-      // В реальном приложении здесь стоило бы ожидать подтверждения
-      // через обработку события "chat.init.confirm" в потоке событий
       
-      debugPrint('initializeChat: Completed successfully, returning chatId: $temporaryChatId');
-      return temporaryChatId;
+      // Обновляем список чатов
+      _loadChats();
+      
+      debugPrint('initializeChat: Completed successfully, returning chatId: $chatId');
+      return chatId;
     } catch (e) {
       debugPrint('initializeChat: Error initializing chat: $e');
       debugPrintStack();
@@ -121,16 +147,30 @@ class ChatService {
   }
 
   /// Обрабатывает входящий запрос на инициализацию чата.
-  Future<void> _handleChatInitialization(ChatInitEvent event) async {
+  Future<void> _handleChatInitEvent(ChatInitEvent event) async {
     try {
-      final chatId = event.chatId;
-      final initiatorId = event.initiatorId;
+      final senderId = event.senderId;
+      final initiatorName = event.initiatorName;
       final remotePublicKey = event.publicKey;
+
+      debugPrint('Handling chat initialization from $initiatorName ($senderId)');
+      
+      // Проверяем, был ли чат удален пользователем
+      if (await _chatManager.isChatWithUserDeleted(senderId)) {
+        // Если да, снимаем пометку удаления
+        await _chatManager.clearDeletedChatMark(senderId);
+      }
+      
+      // Получаем локальный ID чата
+      final chatId = _chatManager.generateChatId(senderId);
+      
+      // Создаем чат в локальном хранилище, если его еще нет
+      await _chatManager.getOrCreateChatWithUser(senderId, initiatorName);
 
       // Генерируем свою пару ключей для ответа
       final keyPair = await _cryptoService.generateKeyPair();
-
-      // Генерируем часть симметричного ключа
+      
+      // Генерируем частичный ключ
       final partialKey = await _cryptoService.generateRandomBytes(32);
 
       // Шифруем часть ключа публичным ключом инициатора
@@ -139,18 +179,14 @@ class ChatService {
         remotePublicKey,
       );
 
-      // Отправляем ответ с ключами
-      await _webSocketService.sendKeyExchangeResponse(
-        chatId,
-        keyPair.publicKey,
-        encryptedPartialKey,
-      );
-
+      // Получаем свое имя пользователя для отправки инициатору
+      final myUsername = await _getUsername();
+      
       // Сохраняем информацию о ключах для дальнейшего завершения обмена
       await _chatRepository.saveChatKeys(
         ChatKey(
           chatId: chatId,
-          userId: initiatorId,
+          userId: senderId,
           publicKey: keyPair.publicKey,
           privateKey: keyPair.privateKey,
           remotePublicKey: remotePublicKey,
@@ -159,37 +195,39 @@ class ChatService {
         ),
       );
 
-      // Создаем новый чат в локальном хранилище (статус: в процессе инициализации)
-      final newChat = Chat(
-        id: chatId,
-        participantId: initiatorId,
-        lastMessage: 'Инициализация чата...',
-        lastMessageTime: DateTime.now(),
-        unreadCount: 0,
-        isInitialized: false,
+      // Отправляем ответ с ключами
+      await _webSocketService.sendKeyExchange(
+        senderId,
+        myUsername,
+        keyPair.publicKey,
+        encryptedPartialKey,
       );
-
-      await _chatRepository.saveChat(newChat);
 
       // Обновляем список чатов
       _loadChats();
     } catch (e) {
       debugPrint('Error handling chat initialization: $e');
+      debugPrintStack();
     }
   }
 
   /// Обрабатывает ответ при обмене ключами.
-  Future<void> _handleKeyExchange(KeyExchangeEvent event) async {
+  Future<void> _handleKeyExchangeEvent(KeyExchangeEvent event) async {
     try {
-      final chatId = event.chatId;
       final senderId = event.senderId;
+      final responderName = event.responderName;
       final remotePublicKey = event.publicKey;
       final encryptedPartialKey = event.encryptedPartialKey;
+
+      debugPrint('Handling key exchange from $responderName ($senderId)');
+      
+      // Получаем локальный ID чата
+      final chatId = _chatManager.generateChatId(senderId);
 
       // Получаем наши ключи для этого чата
       final chatKeyData = await _chatRepository.getChatKeys(chatId);
       if (chatKeyData == null) {
-        throw Exception('Chat keys not found for chatId: $chatId');
+        throw Exception('Chat keys not found for chat with user: $senderId');
       }
 
       // Расшифровываем частичный ключ собеседника
@@ -202,9 +240,9 @@ class ChatService {
       final ourPartialKey = await _cryptoService.generateRandomBytes(32);
 
       // Комбинируем ключи для создания полного симметричного ключа
-      // (в реальном приложении используется более сложный алгоритм)
-      final combinedKey =
-          await _cryptoService.deriveKey(remotePartialKey + ourPartialKey);
+      final combinedKey = await _cryptoService.deriveKey(
+        remotePartialKey + ourPartialKey
+      );
 
       // Шифруем нашу часть ключа для отправки
       final encryptedOurPartialKey = await _cryptoService.encryptAsymmetric(
@@ -214,10 +252,13 @@ class ChatService {
 
       // Отправляем завершение обмена ключами
       await _webSocketService.sendKeyExchangeComplete(
-        chatId,
+        senderId,
         encryptedOurPartialKey,
       );
 
+      // Обновляем имя пользователя, если оно изменилось
+      await _chatManager.updateUserName(senderId, responderName);
+      
       // Обновляем данные ключа в хранилище
       await _chatRepository.saveChatKeys(
         chatKeyData.copyWith(
@@ -228,7 +269,7 @@ class ChatService {
       );
 
       // Обновляем статус чата на "инициализирован"
-      final chat = await _chatRepository.getChat(chatId);
+      final chat = await _chatManager.getChatWithUser(senderId);
       if (chat != null) {
         await _chatRepository.saveChat(
           chat.copyWith(isInitialized: true),
@@ -239,21 +280,26 @@ class ChatService {
       }
     } catch (e) {
       debugPrint('Error handling key exchange: $e');
+      debugPrintStack();
     }
   }
 
   /// Обрабатывает завершение обмена ключами.
-  Future<void> _handleKeyExchangeComplete(
+  Future<void> _handleKeyExchangeCompleteEvent(
       KeyExchangeCompleteEvent event) async {
     try {
-      final chatId = event.chatId;
       final senderId = event.senderId;
       final encryptedPartialKey = event.encryptedPartialKey;
+
+      debugPrint('Handling key exchange completion from user $senderId');
+      
+      // Получаем локальный ID чата
+      final chatId = _chatManager.generateChatId(senderId);
 
       // Получаем данные ключей для этого чата
       final chatKeyData = await _chatRepository.getChatKeys(chatId);
       if (chatKeyData == null) {
-        throw Exception('Chat keys not found for chatId: $chatId');
+        throw Exception('Chat keys not found for chat with user: $senderId');
       }
 
       // Расшифровываем финальную часть ключа
@@ -263,8 +309,9 @@ class ChatService {
       );
 
       // Комбинируем ключи
-      final combinedKey = await _cryptoService
-          .deriveKey(chatKeyData.partialKey + remotePartialKey);
+      final combinedKey = await _cryptoService.deriveKey(
+        chatKeyData.partialKey + remotePartialKey
+      );
 
       // Обновляем данные ключа
       await _chatRepository.saveChatKeys(
@@ -275,7 +322,7 @@ class ChatService {
       );
 
       // Обновляем статус чата
-      final chat = await _chatRepository.getChat(chatId);
+      final chat = await _chatManager.getChatWithUser(senderId);
       if (chat != null) {
         await _chatRepository.saveChat(
           chat.copyWith(isInitialized: true),
@@ -286,49 +333,56 @@ class ChatService {
       }
     } catch (e) {
       debugPrint('Error handling key exchange completion: $e');
+      debugPrintStack();
     }
   }
 
-  /// Отправляет сообщение в указанный чат.
-  Future<bool> sendMessage(String chatId, String content,
-      {String type = 'text'}) async {
+  /// Отправляет сообщение пользователю.
+  Future<bool> sendMessage(String recipientId, String content, {String type = 'text'}) async {
     try {
+      debugPrint('Sending message to user $recipientId');
+      
       // Получаем ID текущего пользователя
       final userId = await getCurrentUserId();
 
+      // Создаем локальный ID чата
+      final chatId = _chatManager.generateChatId(recipientId);
+      
+      // Генерируем ID сообщения
+      final messageId = 'msg_${DateTime.now().millisecondsSinceEpoch}_${userId.substring(0, min(5, userId.length))}';
+
       // Создаем объект сообщения
       final message = ChatMessage(
-        id: 'temp-${DateTime.now().millisecondsSinceEpoch}',
+        id: messageId,
         chatId: chatId,
         senderId: userId,
-        content: content, // Расшифрованное содержимое
+        content: content, // Расшифрованное содержимое для отображения
         type: type,
         timestamp: DateTime.now(),
         status: MessageStatus.sending,
-        isPending: !_communicationService
-            .isConnected, // Помечаем как ожидающее, если нет соединения
+        isPending: !_communicationService.isConnected, // Помечаем как ожидающее, если нет соединения
       );
 
       // Получаем данные ключей для этого чата
       final chatKeyData = await _chatRepository.getChatKeys(chatId);
       if (chatKeyData == null || !chatKeyData.isComplete) {
-        throw Exception(
-            'Chat keys not found or incomplete for chatId: $chatId');
+        throw Exception('Chat keys not found or incomplete for chat with user: $recipientId');
       }
+
+      // Шифруем контент сообщения симметричным ключом
+      final encryptedContent = await _cryptoService.encryptSymmetric(
+        content,
+        chatKeyData.symmetricKey!,
+      );
 
       // Создаём копию сообщения с зашифрованным содержимым для хранения
       ChatMessage messageToStore;
 
       if (_communicationService.isConnected) {
-        // Шифруем контент сообщения симметричным ключом
-        final encryptedContent = await _cryptoService.encryptSymmetric(
-          content,
-          chatKeyData.symmetricKey!,
-        );
-
         // Отправляем сообщение через WebSocket
-        await _webSocketService.sendMessage(
-          chatId,
+        await _webSocketService.sendChatMessage(
+          recipientId,
+          messageId,
           encryptedContent,
           type: type,
         );
@@ -339,12 +393,7 @@ class ChatService {
           encryptedContent: encryptedContent, // Сохраняем зашифрованную версию
         );
       } else {
-        // Если нет соединения, шифруем для сохранения, но не отправляем
-        final encryptedContent = await _cryptoService.encryptSymmetric(
-          content,
-          chatKeyData.symmetricKey!,
-        );
-
+        // Если нет соединения
         messageToStore = message.copyWith(
           encryptedContent: encryptedContent,
         );
@@ -357,7 +406,7 @@ class ChatService {
       await _chatRepository.saveMessage(messageToStore);
 
       // Обновляем информацию о чате
-      final chat = await _chatRepository.getChat(chatId);
+      final chat = await _chatManager.getChatWithUser(recipientId);
       if (chat != null) {
         await _chatRepository.saveChat(
           chat.copyWith(
@@ -376,40 +425,57 @@ class ChatService {
       return true;
     } catch (e) {
       debugPrint('Error sending message: $e');
+      debugPrintStack();
       return false;
     }
   }
 
   /// Обрабатывает входящее сообщение.
-  Future<void> _handleIncomingMessage(ChatMessageEvent event) async {
+  Future<void> _handleMessageEvent(ChatMessageEvent event) async {
     try {
-      final chatId = event.chatId;
       final senderId = event.senderId;
+      final messageId = event.messageId;
       final encryptedContent = event.content;
       final type = event.type;
       final timestamp = DateTime.parse(event.timestamp);
 
+      debugPrint('Handling incoming message from user $senderId');
+      
+      // Получаем локальный ID чата
+      final chatId = _chatManager.generateChatId(senderId);
+
+      // Проверяем, был ли чат удален
+      if (await _chatManager.isChatWithUserDeleted(senderId)) {
+        debugPrint('Chat with user $senderId was deleted, ignoring message');
+        return;
+      }
+
       // Получаем данные ключей
       final chatKey = await _chatRepository.getChatKeys(chatId);
       if (chatKey == null || !chatKey.isComplete) {
-        throw Exception(
-            'Chat keys not found or incomplete for chatId: $chatId');
+        debugPrint('Chat keys not found or incomplete for chat with user: $senderId');
+        return;
       }
 
       // Расшифровываем контент
-      final decryptedContent = await _cryptoService.decryptSymmetric(
-        encryptedContent,
-        chatKey.symmetricKey!,
-      );
+      String decryptedContent;
+      try {
+        decryptedContent = await _cryptoService.decryptSymmetric(
+          encryptedContent,
+          chatKey.symmetricKey!,
+        );
+      } catch (e) {
+        debugPrint('Error decrypting message: $e');
+        decryptedContent = '[Ошибка расшифровки сообщения]';
+      }
 
       // Создаем объект сообщения с обоими версиями контента
       final message = ChatMessage(
-        id: event.messageId,
+        id: messageId,
         chatId: chatId,
         senderId: senderId,
         content: decryptedContent, // Расшифрованный контент для отображения
-        encryptedContent:
-            encryptedContent, // Зашифрованный контент для хранения
+        encryptedContent: encryptedContent, // Зашифрованный контент для хранения
         type: type,
         timestamp: timestamp,
         status: MessageStatus.delivered,
@@ -420,41 +486,62 @@ class ChatService {
 
       // Обновляем статус сообщения на "доставлено"
       await _webSocketService.sendMessageStatus(
-        event.messageId,
-        chatId,
+        senderId,
+        messageId,
         'delivered',
       );
 
+      // Проверяем существование чата, создаем если его нет
+      Chat chat;
+      final existingChat = await _chatManager.getChatWithUser(senderId);
+      if (existingChat == null) {
+        // Если чат не существует, создаем новый
+        chat = await _chatManager.getOrCreateChatWithUser(
+          senderId, 
+          'Пользователь',
+          isInitialized: true
+        );
+      } else {
+        chat = existingChat;
+      }
+
       // Обновляем информацию о чате
-      final chat = await _chatRepository.getChat(chatId);
       final userId = await getCurrentUserId();
       final isFromMe = senderId == userId;
 
-      if (chat != null) {
-        await _chatRepository.saveChat(
-          chat.copyWith(
-            lastMessage: decryptedContent,
-            lastMessageTime: timestamp,
-            unreadCount: isFromMe ? chat.unreadCount : chat.unreadCount + 1,
-          ),
-        );
+      await _chatRepository.saveChat(
+        chat.copyWith(
+          lastMessage: decryptedContent,
+          lastMessageTime: timestamp,
+          unreadCount: isFromMe ? chat.unreadCount : chat.unreadCount + 1,
+        ),
+      );
 
-        // Обновляем список чатов
-        _loadChats();
-      }
+      // Обновляем список чатов
+      _loadChats();
 
       // Публикуем сообщение в поток
       _messageSubject.add(message);
     } catch (e) {
       debugPrint('Error handling incoming message: $e');
+      debugPrintStack();
     }
   }
 
   /// Обрабатывает обновление статуса сообщения.
-  Future<void> _handleMessageStatus(MessageStatusEvent event) async {
+  Future<void> _handleMessageStatusEvent(MessageStatusEvent event) async {
     try {
+      final senderId = event.senderId;
       final messageId = event.messageId;
       final status = event.status;
+
+      debugPrint('Handling message status update from user $senderId: $status');
+
+      // Проверяем, был ли чат удален
+      if (await _chatManager.isChatWithUserDeleted(senderId)) {
+        debugPrint('Chat with user $senderId was deleted, ignoring status update');
+        return;
+      }
 
       // Получаем сообщение из хранилища
       final message = await _chatRepository.getMessage(messageId);
@@ -472,6 +559,44 @@ class ChatService {
       _messageSubject.add(message.copyWith(status: newStatus));
     } catch (e) {
       debugPrint('Error handling message status: $e');
+      debugPrintStack();
+    }
+  }
+
+  /// Обрабатывает удаление чата собеседником.
+  Future<void> _handleChatDeleteEvent(ChatDeleteEvent event) async {
+    try {
+      final senderId = event.senderId;
+
+      debugPrint('Handling chat delete request from user $senderId');
+
+      // Проверяем, существует ли чат
+      if (await _chatManager.hasChatWithUser(senderId)) {
+        // Получаем локальный ID чата
+        final chatId = _chatManager.generateChatId(senderId);
+        
+        // Получаем чат для показа уведомления
+        final chat = await _chatManager.getChatWithUser(senderId);
+        
+        // В этой реализации мы не удаляем чат полностью, а помечаем его
+        if (chat != null) {
+          await _chatRepository.saveChat(
+            chat.copyWith(
+              lastMessage: 'Собеседник удалил чат',
+              isInitialized: false, // Помечаем как неинициализированный
+            ),
+          );
+          
+          // Помечаем чат как удаленный со стороны собеседника
+          await _chatManager.markChatWithUserAsDeleted(senderId);
+        }
+        
+        // Обновляем список чатов
+        _loadChats();
+      }
+    } catch (e) {
+      debugPrint('Error handling chat delete event: $e');
+      debugPrintStack();
     }
   }
 
@@ -515,6 +640,30 @@ class ChatService {
     }
   }
 
+  /// Получает имя текущего пользователя.
+  Future<String> _getUsername() async {
+    try {
+      // Получаем данные авторизации
+      final authData = await _sessionService.getAuthData();
+      if (authData == null) {
+        throw Exception('Нет данных авторизации');
+      }
+
+      // Извлекаем полезную нагрузку из JWT токена
+      final payload = _decodeJwtPayload(authData.accessToken);
+
+      // Извлекаем имя пользователя из поля username
+      if (payload.containsKey('username')) {
+        return payload['username'] as String;
+      }
+
+      return 'Пользователь';
+    } catch (e) {
+      debugPrint('Error getting username: $e');
+      return 'Пользователь';
+    }
+  }
+
   /// Декодирует полезную нагрузку из JWT токена.
   Map<String, dynamic> _decodeJwtPayload(String token) {
     try {
@@ -538,8 +687,10 @@ class ChatService {
     }
   }
 
-  Future<bool> checkEncryptionStatus(String chatId) async {
+  /// Проверяет статус шифрования чата.
+  Future<bool> checkEncryptionStatus(String userId) async {
     try {
+      final chatId = _chatManager.generateChatId(userId);
       final chatKey = await _chatRepository.getChatKeys(chatId);
       return chatKey != null && chatKey.isComplete;
     } catch (e) {
@@ -549,10 +700,13 @@ class ChatService {
   }
 
   /// Очищает историю сообщений указанного чата.
-  Future<void> clearChatHistory(String chatId) async {
+  Future<void> clearChatHistory(String userId) async {
     try {
+      // Получаем локальный ID чата
+      final chatId = _chatManager.generateChatId(userId);
+      
       // Получаем текущий чат
-      final chat = await _chatRepository.getChat(chatId);
+      final chat = await _chatManager.getChatWithUser(userId);
       if (chat == null) {
         throw Exception('Чат не найден');
       }
@@ -583,16 +737,22 @@ class ChatService {
   }
 
   /// Удаляет чат полностью.
-  Future<void> deleteChat(String chatId) async {
+  Future<void> deleteChat(String userId) async {
     try {
-      // Удаляем сообщения
-      await _chatRepository.deleteAllMessages(chatId);
-
-      // Удаляем ключи шифрования
-      await _chatRepository.deleteChatKeys(chatId);
-
-      // Удаляем сам чат
-      await _chatRepository.deleteChat(chatId);
+      debugPrint('Deleting chat with user $userId');
+      
+      // Удаляем чат через ChatManager
+      await _chatManager.deleteChatWithUser(userId);
+      
+      // Отправляем уведомление об удалении чата другому пользователю
+      if (_communicationService.isConnected) {
+        try {
+          await _webSocketService.sendChatDelete(userId);
+        } catch (e) {
+          debugPrint('Error sending chat delete notification: $e');
+          // Продолжаем даже при ошибке отправки уведомления
+        }
+      }
 
       // Обновляем список чатов
       _loadChats();
@@ -603,10 +763,13 @@ class ChatService {
   }
 
   /// Повторно инициализирует чат (пересоздает ключи шифрования).
-  Future<void> reinitializeChat(String chatId) async {
+  Future<void> reinitializeChat(String userId) async {
     try {
-      // Получаем информацию о чате
-      final chat = await _chatRepository.getChat(chatId);
+      // Получаем локальный ID чата
+      final chatId = _chatManager.generateChatId(userId);
+      
+      // Информация о чате
+      final chat = await _chatManager.getChatWithUser(userId);
       if (chat == null) {
         throw Exception('Чат не найден');
       }
@@ -619,25 +782,30 @@ class ChatService {
         chat.copyWith(isInitialized: false),
       );
 
-      // Если это серверный режим, инициируем новый обмен ключами
+      // Если есть соединение, инициируем новый обмен ключами
       if (_communicationService.isConnected) {
         // Генерируем новую пару ключей
         final keyPair = await _cryptoService.generateKeyPair();
+        final partialKey = await _cryptoService.generateRandomBytes(32);
+        
+        // Получаем свое имя пользователя для отправки
+        final myUsername = await _getUsername();
 
         // Отправляем запрос на инициализацию чата
-        await _webSocketService.sendChatInitialization(
-          chat.participantId,
-          keyPair.publicKey,
+        await _webSocketService.sendChatInit(
+          userId,
+          myUsername,
+          keyPair.publicKey
         );
 
         // Сохраняем временные данные ключей
         await _chatRepository.saveChatKeys(
           ChatKey(
             chatId: chatId,
-            userId: chat.participantId,
+            userId: userId,
             publicKey: keyPair.publicKey,
             privateKey: keyPair.privateKey,
-            partialKey: await _cryptoService.generateRandomBytes(32),
+            partialKey: partialKey,
             isComplete: false,
           ),
         );
@@ -653,51 +821,66 @@ class ChatService {
 
   /// Получает список чатов.
   Future<List<Chat>> getChats() async {
-    return _chatRepository.getChats();
+    final chats = await _chatRepository.getChats();
+    
+    // Фильтруем удаленные чаты
+    final result = <Chat>[];
+    for (final chat in chats) {
+      if (!await _chatManager.isChatWithUserDeleted(chat.participantId)) {
+        result.add(chat);
+      }
+    }
+    
+    return result;
   }
 
   /// Получает сообщения для указанного чата.
   Future<List<ChatMessage>> getMessages(
-    String chatId, {
+    String userId, {
     int page = 1,
     int pageSize = 20,
   }) async {
     try {
-      // Получаем ключи чата
-      final chatKey = await _chatRepository.getChatKeys(chatId);
-      if (chatKey == null || !chatKey.isComplete) {
-        debugPrint(
-            'Warning: Chat keys not found or incomplete for chatId: $chatId');
+      // Получаем локальный ID чата
+      final chatId = _chatManager.generateChatId(userId);
+      
+      // Проверяем, был ли чат удален
+      if (await _chatManager.isChatWithUserDeleted(userId)) {
         return [];
       }
-
+      
+      // Получаем ключи чата
+      final chatKey = await _chatRepository.getChatKeys(chatId);
+      
       // Получаем все сообщения для чата
       final allMessages = await _chatRepository.getMessages(chatId);
 
       // Проверяем, нужно ли расшифровывать какие-либо сообщения
-      for (int i = 0; i < allMessages.length; i++) {
-        final message = allMessages[i];
-
-        // Если у сообщения есть зашифрованное содержимое, но нет расшифрованного
-        if (message.encryptedContent != null &&
-            (message.content.isEmpty ||
-                message.content == '[Зашифрованное сообщение]')) {
-          try {
-            // Расшифровываем содержимое
-            final decryptedContent = await _cryptoService.decryptSymmetric(
-              message.encryptedContent!,
-              chatKey.symmetricKey!,
-            );
-
-            // Обновляем сообщение с расшифрованным содержимым
-            final updatedMessage = message.copyWith(content: decryptedContent);
-            await _chatRepository.saveMessage(updatedMessage);
-
-            // Обновляем сообщение в текущем списке
-            allMessages[i] = updatedMessage;
-          } catch (e) {
-            debugPrint('Error decrypting message ${message.id}: $e');
-            // В случае ошибки оставляем оригинальное сообщение
+      if (chatKey != null && chatKey.isComplete && chatKey.symmetricKey != null) {
+        for (int i = 0; i < allMessages.length; i++) {
+          final message = allMessages[i];
+  
+          // Если у сообщения есть зашифрованное содержимое, но нет расшифрованного
+          if (message.encryptedContent != null &&
+              (message.content.isEmpty ||
+                  message.content == '[Зашифрованное сообщение]')) {
+            try {
+              // Расшифровываем содержимое
+              final decryptedContent = await _cryptoService.decryptSymmetric(
+                message.encryptedContent!,
+                chatKey.symmetricKey!,
+              );
+  
+              // Обновляем сообщение с расшифрованным содержимым
+              final updatedMessage = message.copyWith(content: decryptedContent);
+              await _chatRepository.saveMessage(updatedMessage);
+  
+              // Обновляем сообщение в текущем списке
+              allMessages[i] = updatedMessage;
+            } catch (e) {
+              debugPrint('Error decrypting message ${message.id}: $e');
+              // В случае ошибки оставляем оригинальное сообщение
+            }
           }
         }
       }
@@ -736,12 +919,19 @@ class ChatService {
         message.copyWith(status: MessageStatus.read),
       );
 
-      // Отправляем статус на сервер
-      await _webSocketService.sendMessageStatus(
-        messageId,
-        message.chatId,
-        'read',
-      );
+      // Извлекаем ID пользователя из ID чата (новый формат: chat_with_userId)
+      final chatId = message.chatId;
+      final prefixLength = 'chat_with_'.length;
+      if (chatId.length > prefixLength && chatId.startsWith('chat_with_')) {
+        final recipientId = chatId.substring(prefixLength);
+        
+        // Отправляем статус на сервер
+        await _webSocketService.sendMessageStatus(
+          recipientId,
+          messageId,
+          'read',
+        );
+      }
 
       // Публикуем обновленное сообщение
       _messageSubject.add(message.copyWith(status: MessageStatus.read));
@@ -754,49 +944,35 @@ class ChatService {
   Future<String?> openOrCreateChat(String userId, String userName) async {
     try {
       debugPrint('openOrCreateChat: Starting for user $userId ($userName)');
+
+      // Проверяем, был ли чат удален пользователем
+      if (await _chatManager.isChatWithUserDeleted(userId)) {
+        // Если да, снимаем пометку удаления
+        await _chatManager.clearDeletedChatMark(userId);
+      }
       
-      // Пытаемся найти существующий чат с пользователем
-      final chats = await getChats();
-      debugPrint('openOrCreateChat: Loaded ${chats.length} existing chats');
-
-      final existingChat =
-          chats.where((chat) => chat.participantId == userId).firstOrNull;
-
-      if (existingChat != null) {
-        debugPrint('openOrCreateChat: Found existing chat with ID: ${existingChat.id}');
-        return existingChat.id;
+      // Проверяем, существует ли чат с пользователем
+      if (await _chatManager.hasChatWithUser(userId)) {
+        // Чат существует, возвращаем его ID
+        final chatId = _chatManager.generateChatId(userId);
+        debugPrint('openOrCreateChat: Existing chat found with ID: $chatId');
+        return chatId;
       }
 
-      // Если чат не найден, инициируем новый
-      debugPrint('openOrCreateChat: No existing chat found, initializing new chat');
-      final chatId = await initializeChat(userId);
-
-      if (chatId == null) {
-        debugPrint('openOrCreateChat: Failed to initialize chat, returned null chatId');
-        throw Exception('Не удалось создать чат');
+      // Если чат не существует и есть соединение, инициируем новый
+      if (_communicationService.isConnected) {
+        debugPrint('openOrCreateChat: No existing chat found, initializing new chat');
+        return await initializeChat(userId, userName);
+      } else {
+        // Если нет соединения, создаем локальный чат без инициализации
+        final chat = await _chatManager.getOrCreateChatWithUser(
+          userId, 
+          userName,
+          isInitialized: false
+        );
+        debugPrint('openOrCreateChat: Created local chat without initialization');
+        return chat.id;
       }
-
-      debugPrint('openOrCreateChat: Chat initialized with ID: $chatId');
-      
-      // Создаем локальную запись о чате
-      final newChat = Chat(
-        id: chatId,
-        participantId: userId,
-        participantName: userName,
-        lastMessage: 'Чат инициализирован',
-        lastMessageTime: DateTime.now(),
-        isInitialized: false,
-      );
-
-      debugPrint('openOrCreateChat: Saving new chat to repository');
-      await _chatRepository.saveChat(newChat);
-      debugPrint('openOrCreateChat: Chat saved successfully');
-
-      // Обновляем список чатов
-      _loadChats();
-      debugPrint('openOrCreateChat: Chat list refreshed');
-
-      return chatId;
     } catch (e) {
       debugPrint('openOrCreateChat: Error opening or creating chat: $e');
       debugPrintStack();
@@ -804,8 +980,12 @@ class ChatService {
     }
   }
 
+  /// Инициализирует сервис чатов.
   Future<void> initialize() async {
     try {
+      // Запускаем миграцию чатов
+      await _chatManager.migrateChats();
+      
       // Загружаем чаты
       await _loadChats();
 
@@ -819,6 +999,7 @@ class ChatService {
     }
   }
 
+  /// Обрабатывает изменение состояния соединения.
   void _handleConnectionChange(YuConnectionState state) {
     if (state == YuConnectionState.connected) {
       // При восстановлении соединения пытаемся обработать очередь сообщений
@@ -827,7 +1008,6 @@ class ChatService {
   }
 
   /// Освобождает ресурсы.
-  @override
   void dispose() {
     _messageSubject.close();
     _chatListSubject.close();

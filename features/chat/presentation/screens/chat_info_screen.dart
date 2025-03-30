@@ -1,15 +1,16 @@
 // lib/features/chat/presentation/screens/chat_info_screen.dart
 import 'package:flutter/material.dart';
+import '../../domain/managers/chat_manager.dart';
 import '../../domain/models/chat.dart';
 import '../../domain/services/chat_service.dart';
 
 class ChatInfoScreen extends StatefulWidget {
-  final String chatId;
+  final String recipientId;
   final String participantName;
 
   const ChatInfoScreen({
     Key? key,
-    required this.chatId,
+    required this.recipientId,
     required this.participantName,
   }) : super(key: key);
 
@@ -19,6 +20,7 @@ class ChatInfoScreen extends StatefulWidget {
 
 class _ChatInfoScreenState extends State<ChatInfoScreen> {
   final _chatService = ChatService();
+  final _chatManager = ChatManager();
   
   Chat? _chatData;
   bool _isLoading = true;
@@ -37,25 +39,15 @@ class _ChatInfoScreenState extends State<ChatInfoScreen> {
       });
       
       // Получаем данные о чате
-      final chats = await _chatService.getChats();
-      final chat = chats.firstWhere(
-        (c) => c.id == widget.chatId,
-        orElse: () => Chat(
-          id: widget.chatId,
-          participantId: 'unknown',
-          participantName: widget.participantName,
-          lastMessage: '',
-          lastMessageTime: DateTime.now(),
-        ),
-      );
+      final chat = await _chatManager.getChatWithUser(widget.recipientId);
       
       // Проверяем статус шифрования
-      final chatKeys = await _chatService.checkEncryptionStatus(widget.chatId);
+      final encryptionActive = await _chatService.checkEncryptionStatus(widget.recipientId);
       
       if (mounted) {
         setState(() {
           _chatData = chat;
-          _isEncryptionActive = chatKeys;
+          _isEncryptionActive = encryptionActive;
           _isLoading = false;
         });
       }
@@ -109,7 +101,7 @@ class _ChatInfoScreenState extends State<ChatInfoScreen> {
       }
       
       // Очищаем историю чата
-      await _chatService.clearChatHistory(widget.chatId);
+      await _chatService.clearChatHistory(widget.recipientId);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -169,7 +161,7 @@ class _ChatInfoScreenState extends State<ChatInfoScreen> {
       }
       
       // Удаляем чат
-      await _chatService.deleteChat(widget.chatId);
+      await _chatService.deleteChat(widget.recipientId);
       
       if (mounted) {
         // Возвращаемся на главный экран
@@ -231,7 +223,7 @@ class _ChatInfoScreenState extends State<ChatInfoScreen> {
       }
       
       // Инициируем пересоздание ключей
-      await _chatService.reinitializeChat(widget.chatId);
+      await _chatService.reinitializeChat(widget.recipientId);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -301,7 +293,7 @@ class _ChatInfoScreenState extends State<ChatInfoScreen> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  'ID: ${_chatData?.participantId ?? "Неизвестно"}',
+                                  'ID: ${widget.recipientId}',
                                   style: TextStyle(
                                     fontSize: 14,
                                     color: Colors.grey[600],

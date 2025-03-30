@@ -190,36 +190,102 @@ void _onStart(ServiceInstance service) async {
     }
   });
   
-  // Подписываемся на события чата
+  // Обработка сообщений чата (новый формат)
   webSocketService.onMessage.listen((chatMessage) {
     try {
-      // Обрабатываем сообщение
+      // Обрабатываем сообщение - извлекаем ID отправителя
+      final senderId = chatMessage.senderId;
+      
+      // Формируем ID чата по новой схеме
+      final chatId = 'chat_with_$senderId';
+      
+      // Отправляем в основное приложение
       service.invoke('newMessage', {
-        'chatId': chatMessage.chatId,
-        'senderId': chatMessage.senderId,
+        'chatId': chatId,
+        'senderId': senderId,
         'messageId': chatMessage.messageId,
         'content': chatMessage.content,
         'type': chatMessage.type,
+        'timestamp': chatMessage.timestamp,
       });
       
       // Обновляем уведомление при получении сообщения
       if (service is AndroidServiceInstance) {
         service.setForegroundNotificationInfo(
           title: 'Новое сообщение',
-          content: 'У вас новое сообщение',
+          content: 'У вас новое сообщение от ${senderId}',
         );
       }
+      
+      // Автоматически отправляем статус "доставлено"
+      webSocketService.sendMessageStatus(
+        senderId,
+        chatMessage.messageId,
+        'delivered'
+      );
     } catch (e) {
       debugPrint('Error handling message in background service: $e');
     }
   });
   
-  // Подписываемся на инициализацию чата
-  webSocketService.onChatInit.listen((chatInit) {
+  // Подписываемся на инициализацию чата (новый формат)
+  webSocketService.onChatInit.listen((event) {
+    final senderId = event.senderId;
+    final initiatorName = event.initiatorName;
+    final publicKey = event.publicKey;
+    
     service.invoke('chatInit', {
-      'chatId': chatInit.chatId,
-      'initiatorId': chatInit.initiatorId,
-      'publicKey': chatInit.publicKey,
+      'senderId': senderId,
+      'initiatorName': initiatorName,
+      'publicKey': publicKey,
+    });
+  });
+  
+  // Подписываемся на обмен ключами (новый формат)
+  webSocketService.onKeyExchange.listen((event) {
+    final senderId = event.senderId;
+    final responderName = event.responderName;
+    final publicKey = event.publicKey;
+    final encryptedPartialKey = event.encryptedPartialKey;
+    
+    service.invoke('keyExchange', {
+      'senderId': senderId,
+      'responderName': responderName,
+      'publicKey': publicKey,
+      'encryptedPartialKey': encryptedPartialKey,
+    });
+  });
+  
+  // Подписываемся на завершение обмена ключами (новый формат)
+  webSocketService.onKeyExchangeComplete.listen((event) {
+    final senderId = event.senderId;
+    final encryptedPartialKey = event.encryptedPartialKey;
+    
+    service.invoke('keyExchangeComplete', {
+      'senderId': senderId,
+      'encryptedPartialKey': encryptedPartialKey,
+    });
+  });
+  
+  // Подписываемся на статусы сообщений (новый формат)
+  webSocketService.onMessageStatus.listen((event) {
+    final senderId = event.senderId;
+    final messageId = event.messageId;
+    final status = event.status;
+    
+    service.invoke('messageStatus', {
+      'senderId': senderId,
+      'messageId': messageId,
+      'status': status,
+    });
+  });
+  
+  // Подписываемся на удаление чата (новый формат)
+  webSocketService.onChatDelete.listen((event) {
+    final senderId = event.senderId;
+    
+    service.invoke('chatDelete', {
+      'senderId': senderId,
     });
   });
   

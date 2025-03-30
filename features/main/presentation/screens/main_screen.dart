@@ -170,6 +170,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   
   Future<void> _initializeServices() async {
     try {
+      // Инициализируем ChatService для миграции старых чатов
+      await _chatService.initialize();
+      
       // Инициализируем коммуникационный сервис
       await _communicationService.initialize();
       
@@ -283,7 +286,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
   
   Future<void> _handleUserSelected(UserSearchItem user) async {
-    debugPrint('User selected: ${user.username}'); // Отладочный вывод
+    debugPrint('User selected: ${user.username}');
     
     // Закрываем панель поиска
     setState(() {
@@ -311,7 +314,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     );
     
     try {
-      debugPrint('Calling openOrCreateChat'); // Отладочный вывод
+      debugPrint('Calling openOrCreateChat');
       
       // Получаем или создаем чат с выбранным пользователем
       final chatId = await _chatService.openOrCreateChat(
@@ -319,7 +322,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         user.username,
       );
       
-      debugPrint('Chat ID received: $chatId'); // Отладочный вывод
+      debugPrint('Chat ID received: $chatId');
       
       // Закрываем диалог загрузки
       if (Navigator.canPop(currentContext)) {
@@ -327,7 +330,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       }
       
       if (chatId == null) {
-        debugPrint('Chat ID is null'); // Отладочный вывод
+        debugPrint('Chat ID is null');
         ScaffoldMessenger.of(currentContext).showSnackBar(
           const SnackBar(
             content: Text('Не удалось открыть чат'),
@@ -339,7 +342,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       
       // Переходим на экран чата
       if (mounted) {
-        debugPrint('Navigating to chat screen'); // Отладочный вывод
+        debugPrint('Navigating to chat screen');
         Navigator.of(currentContext).pushNamed(
           AppRouter.chat,
           arguments: ChatScreenArgs(
@@ -349,7 +352,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         );
       }
     } catch (e) {
-      debugPrint('Error handling user selection: $e'); // Отладочный вывод
+      debugPrint('Error handling user selection: $e');
       
       // Закрываем диалог загрузки
       if (Navigator.canPop(currentContext)) {
