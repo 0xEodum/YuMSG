@@ -6,9 +6,11 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:yumsg/core/data/providers/server_data_provider.dart';
+import 'package:yumsg/core/services/websocket/websocket_event.dart';
 import '../session/session_service.dart';
 import '../websocket/websocket_service.dart';
 import '../../../features/startup/domain/enums/work_mode.dart';
+import '../../../features/chat/domain/services/chat_service.dart';
 
 /// Сервис для поддержания фоновых операций, включая WebSocket соединение.
 class BackgroundService {
@@ -22,6 +24,10 @@ class BackgroundService {
   
   // Инстанс флаттер сервиса
   final FlutterBackgroundService _service = FlutterBackgroundService();
+  
+  // Подписки на события от фонового сервиса
+  final List<StreamSubscription> _eventSubscriptions = [];
+  final ChatService _chatService = ChatService();
   
   BackgroundService._internal();
   
@@ -86,6 +92,118 @@ class BackgroundService {
         onBackground: _onIosBackground,
       ),
     );
+    
+    // Настраиваем обработчики событий, получаемых от фонового сервиса
+    _setupEventHandlers();
+  }
+  
+  /// Настраивает обработчики событий от фонового сервиса
+  void _setupEventHandlers() {
+    // Отменяем существующие подписки
+    for (var subscription in _eventSubscriptions) {
+      subscription.cancel();
+    }
+    _eventSubscriptions.clear();
+    
+    // Обработчик инициализации чата
+    _eventSubscriptions.add(_service.on('chatInit').listen((event) {
+      if (event != null) {
+        debugPrint('Received chatInit event from background service');
+        final data = Map<String, dynamic>.from(event as Map);
+        // Передаем событие в ChatService
+        _chatService.handleChatInitEvent(
+          ChatInitEvent(
+            senderId: data['senderId'],
+            initiatorName: data['initiatorName'],
+            publicKey: data['publicKey'],
+          )
+        );
+      }
+    }));
+    
+    // Обработчик обмена ключами
+    _eventSubscriptions.add(_service.on('keyExchange').listen((event) {
+      if (event != null) {
+        debugPrint('Received keyExchange event from background service');
+        final data = Map<String, dynamic>.from(event as Map);
+        _chatService.handleKeyExchangeEvent(
+          KeyExchangeEvent(
+            senderId: data['senderId'],
+            responderName: data['responderName'],
+            publicKey: data['publicKey'],
+            encryptedPartialKey: data['encryptedPartialKey'],
+          )
+        );
+      }
+    }));
+    
+    // Обработчик завершения обмена ключами
+    _eventSubscriptions.add(_service.on('keyExchangeComplete').listen((event) {
+      if (event != null) {
+        debugPrint('Received keyExchangeComplete event from background service');
+        final data = Map<String, dynamic>.from(event as Map);
+        _chatService.handleKeyExchangeCompleteEvent(
+          KeyExchangeCompleteEvent(
+            senderId: data['senderId'],
+            encryptedPartialKey: data['encryptedPartialKey'],
+          )
+        );
+      }
+    }));
+    
+    // Обработчик сообщений чата
+    _eventSubscriptions.add(_service.on('newMessage').listen((event) {
+      if (event != null) {
+        debugPrint('Received newMessage event from background service');
+        final data = Map<String, dynamic>.from(event as Map);
+        _chatService.handleMessageEvent(
+          ChatMessageEvent(
+            senderId: data['senderId'],
+            messageId: data['messageId'],
+            content: data['content'],
+            timestamp: data['timestamp'],
+            type: data['type'],
+            metadata: data['metadata'] != null ? 
+                     Map<String, dynamic>.from(data['metadata'] as Map) : null,
+          )
+        );
+      }
+    }));
+    
+    // Обработчик статусов сообщений
+    _eventSubscriptions.add(_service.on('messageStatus').listen((event) {
+      if (event != null) {
+        debugPrint('Received messageStatus event from background service');
+        final data = Map<String, dynamic>.from(event as Map);
+        _chatService.handleMessageStatusEvent(
+          MessageStatusEvent(
+            senderId: data['senderId'],
+            messageId: data['messageId'],
+            status: data['status'],
+          )
+        );
+      }
+    }));
+    
+    // Обработчик удаления чата
+    _eventSubscriptions.add(_service.on('chatDelete').listen((event) {
+      if (event != null) {
+        debugPrint('Received chatDelete event from background service');
+        final data = Map<String, dynamic>.from(event as Map);
+        _chatService.handleChatDeleteEvent(
+          ChatDeleteEvent(
+            senderId: data['senderId'],
+          )
+        );
+      }
+    }));
+    
+    _eventSubscriptions.add(_service.on('connectionStatus').listen((event) {
+      if (event != null) {
+        debugPrint('Received connectionStatus event from background service');
+        // Можно обновить статус соединения в приложении
+      }
+    }));
   }
   
   /// Запускает фоновый сервис.
@@ -106,6 +224,9 @@ class BackgroundService {
         return; // Нет полной сессии, сервис не нужен
       }
       
+      // Настраиваем обработчики событий
+      _setupEventHandlers();
+      
       // Запускаем сервис
       await _service.startService();
     } catch (e) {
@@ -116,6 +237,12 @@ class BackgroundService {
   /// Останавливает фоновый сервис.
   void stop() {
     _service.invoke('stopService');
+    
+    // Отменяем подписки на события
+    for (var subscription in _eventSubscriptions) {
+      subscription.cancel();
+    }
+    _eventSubscriptions.clear();
   }
   
   /// Отправляет данные в фоновый сервис.
@@ -234,6 +361,8 @@ void _onStart(ServiceInstance service) async {
     final initiatorName = event.initiatorName;
     final publicKey = event.publicKey;
     
+    debugPrint('Background service: Received chat.init from $senderId');
+    
     service.invoke('chatInit', {
       'senderId': senderId,
       'initiatorName': initiatorName,
@@ -248,6 +377,8 @@ void _onStart(ServiceInstance service) async {
     final publicKey = event.publicKey;
     final encryptedPartialKey = event.encryptedPartialKey;
     
+    debugPrint('Background service: Received key exchange from $senderId');
+    
     service.invoke('keyExchange', {
       'senderId': senderId,
       'responderName': responderName,
@@ -260,6 +391,8 @@ void _onStart(ServiceInstance service) async {
   webSocketService.onKeyExchangeComplete.listen((event) {
     final senderId = event.senderId;
     final encryptedPartialKey = event.encryptedPartialKey;
+    
+    debugPrint('Background service: Received key exchange complete from $senderId');
     
     service.invoke('keyExchangeComplete', {
       'senderId': senderId,

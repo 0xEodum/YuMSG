@@ -38,18 +38,16 @@ class ChatService {
 
   ChatService._internal() {
     // Инициализируем обработчики WebSocket событий
-    _webSocketService.onChatInit.listen(_handleChatInitEvent);
-    _webSocketService.onKeyExchange.listen(_handleKeyExchangeEvent);
-    _webSocketService.onKeyExchangeComplete.listen(_handleKeyExchangeCompleteEvent);
-    _webSocketService.onMessage.listen(_handleMessageEvent);
-    _webSocketService.onMessageStatus.listen(_handleMessageStatusEvent);
-    _webSocketService.onChatDelete.listen(_handleChatDeleteEvent);
+    _webSocketService.onChatInit.listen(handleChatInitEvent);
+    _webSocketService.onKeyExchange.listen(handleKeyExchangeEvent);
+    _webSocketService.onKeyExchangeComplete.listen(handleKeyExchangeCompleteEvent);
+    _webSocketService.onMessage.listen(handleMessageEvent);
+    _webSocketService.onMessageStatus.listen(handleMessageStatusEvent);
+    _webSocketService.onChatDelete.listen(handleChatDeleteEvent);
 
     // Загружаем чаты из хранилища при старте
     _loadChats();
-    
-    // Мигрируем старые чаты на новый формат
-    _chatManager.migrateChats();
+
   }
 
   /// Загружает список чатов из локального хранилища.
@@ -125,7 +123,6 @@ class ChatService {
         // Отправляем инициализацию через WebSocket
         await _webSocketService.sendChatInit(
           recipientId,
-          myUsername,
           keyPair.publicKey,
         );
         debugPrint('initializeChat: Initialization request sent successfully');
@@ -147,7 +144,7 @@ class ChatService {
   }
 
   /// Обрабатывает входящий запрос на инициализацию чата.
-  Future<void> _handleChatInitEvent(ChatInitEvent event) async {
+  Future<void> handleChatInitEvent(ChatInitEvent event) async {
     try {
       final senderId = event.senderId;
       final initiatorName = event.initiatorName;
@@ -198,7 +195,6 @@ class ChatService {
       // Отправляем ответ с ключами
       await _webSocketService.sendKeyExchange(
         senderId,
-        myUsername,
         keyPair.publicKey,
         encryptedPartialKey,
       );
@@ -212,7 +208,7 @@ class ChatService {
   }
 
   /// Обрабатывает ответ при обмене ключами.
-  Future<void> _handleKeyExchangeEvent(KeyExchangeEvent event) async {
+  Future<void> handleKeyExchangeEvent(KeyExchangeEvent event) async {
     try {
       final senderId = event.senderId;
       final responderName = event.responderName;
@@ -285,7 +281,7 @@ class ChatService {
   }
 
   /// Обрабатывает завершение обмена ключами.
-  Future<void> _handleKeyExchangeCompleteEvent(
+  Future<void> handleKeyExchangeCompleteEvent(
       KeyExchangeCompleteEvent event) async {
     try {
       final senderId = event.senderId;
@@ -430,9 +426,10 @@ class ChatService {
     }
   }
 
-  /// Обрабатывает входящее сообщение.
-  Future<void> _handleMessageEvent(ChatMessageEvent event) async {
-    try {
+
+/// Обрабатывает входящее сообщение.
+Future<void> handleMessageEvent(ChatMessageEvent event) async {
+  try {
       final senderId = event.senderId;
       final messageId = event.messageId;
       final encryptedContent = event.content;
@@ -526,10 +523,11 @@ class ChatService {
       debugPrint('Error handling incoming message: $e');
       debugPrintStack();
     }
-  }
+}
+
 
   /// Обрабатывает обновление статуса сообщения.
-  Future<void> _handleMessageStatusEvent(MessageStatusEvent event) async {
+  Future<void> handleMessageStatusEvent(MessageStatusEvent event) async {
     try {
       final senderId = event.senderId;
       final messageId = event.messageId;
@@ -564,7 +562,7 @@ class ChatService {
   }
 
   /// Обрабатывает удаление чата собеседником.
-  Future<void> _handleChatDeleteEvent(ChatDeleteEvent event) async {
+  Future<void> handleChatDeleteEvent(ChatDeleteEvent event) async {
     try {
       final senderId = event.senderId;
 
@@ -794,7 +792,6 @@ class ChatService {
         // Отправляем запрос на инициализацию чата
         await _webSocketService.sendChatInit(
           userId,
-          myUsername,
           keyPair.publicKey
         );
 
@@ -983,9 +980,6 @@ class ChatService {
   /// Инициализирует сервис чатов.
   Future<void> initialize() async {
     try {
-      // Запускаем миграцию чатов
-      await _chatManager.migrateChats();
-      
       // Загружаем чаты
       await _loadChats();
 
