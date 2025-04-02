@@ -37,18 +37,20 @@ class ChatService {
   Stream<List<Chat>> get chats => _chatListSubject.stream;
 
   ChatService._internal() {
-    // Инициализируем обработчики WebSocket событий
-    _webSocketService.onChatInit.listen(handleChatInitEvent);
-    _webSocketService.onKeyExchange.listen(handleKeyExchangeEvent);
-    _webSocketService.onKeyExchangeComplete.listen(handleKeyExchangeCompleteEvent);
-    _webSocketService.onMessage.listen(handleMessageEvent);
-    _webSocketService.onMessageStatus.listen(handleMessageStatusEvent);
-    _webSocketService.onChatDelete.listen(handleChatDeleteEvent);
+  // Подписываемся на события WebSocket напрямую через сервис
+  final webSocketService = WebSocketService();
+  
+  // Подписываемся только на интересующие нас события
+  webSocketService.onChatInit.listen(handleChatInitEvent);
+  webSocketService.onKeyExchange.listen(handleKeyExchangeEvent);
+  webSocketService.onKeyExchangeComplete.listen(handleKeyExchangeCompleteEvent);
+  webSocketService.onMessage.listen(handleMessageEvent);
+  webSocketService.onMessageStatus.listen(handleMessageStatusEvent);
+  webSocketService.onChatDelete.listen(handleChatDeleteEvent);
 
-    // Загружаем чаты из хранилища при старте
-    _loadChats();
-
-  }
+  // Загружаем чаты из хранилища при старте
+  _loadChats();
+}
 
   /// Загружает список чатов из локального хранилища.
   Future<void> _loadChats() async {
@@ -145,193 +147,201 @@ class ChatService {
 
   /// Обрабатывает входящий запрос на инициализацию чата.
   Future<void> handleChatInitEvent(ChatInitEvent event) async {
-    try {
-      final senderId = event.senderId;
-      final initiatorName = event.initiatorName;
-      final remotePublicKey = event.publicKey;
+  try {
+    final senderId = event.senderId;
+    final initiatorName = event.initiatorName;
+    final remotePublicKey = event.publicKey;
 
-      debugPrint('Handling chat initialization from $initiatorName ($senderId)');
-      
-      // Проверяем, был ли чат удален пользователем
-      if (await _chatManager.isChatWithUserDeleted(senderId)) {
-        // Если да, снимаем пометку удаления
-        await _chatManager.clearDeletedChatMark(senderId);
-      }
-      
-      // Получаем локальный ID чата
-      final chatId = _chatManager.generateChatId(senderId);
-      
-      // Создаем чат в локальном хранилище, если его еще нет
-      await _chatManager.getOrCreateChatWithUser(senderId, initiatorName);
+    debugPrint('Handling chat initialization from $initiatorName ($senderId)');
+    
+    // Проверяем, был ли чат удален пользователем
+    if (await _chatManager.isChatWithUserDeleted(senderId)) {
+      // Если да, снимаем пометку удаления
+      await _chatManager.clearDeletedChatMark(senderId);
+    }
+    
+    // Получаем локальный ID чата
+    final chatId = _chatManager.generateChatId(senderId);
+    
+    // Создаем чат в локальном хранилище, если его еще нет
+    await _chatManager.getOrCreateChatWithUser(senderId, initiatorName);
 
-      // Генерируем свою пару ключей для ответа
-      final keyPair = await _cryptoService.generateKeyPair();
-      
-      // Генерируем частичный ключ
-      final partialKey = await _cryptoService.generateRandomBytes(32);
+    // Генерируем свою пару ключей для ответа
+    final keyPair = await _cryptoService.generateKeyPair();
+    
+    // Генерируем частичный ключ
+    final partialKey = await _cryptoService.generateRandomBytes(32);
+    debugPrint('=== DEBUG: ОТВЕЧАЮЩИЙ: Сгенерировал partialKey (Base64): $partialKey ===');
 
-      // Шифруем часть ключа публичным ключом инициатора
-      final encryptedPartialKey = await _cryptoService.encryptAsymmetric(
-        partialKey,
-        remotePublicKey,
-      );
+    // Шифруем часть ключа публичным ключом инициатора
+    final encryptedPartialKey = await _cryptoService.encryptAsymmetric(
+      partialKey,
+      remotePublicKey,
+    );
 
-      // Получаем свое имя пользователя для отправки инициатору
-      final myUsername = await _getUsername();
-      
-      // Сохраняем информацию о ключах для дальнейшего завершения обмена
-      await _chatRepository.saveChatKeys(
-        ChatKey(
-          chatId: chatId,
-          userId: senderId,
-          publicKey: keyPair.publicKey,
-          privateKey: keyPair.privateKey,
-          remotePublicKey: remotePublicKey,
-          partialKey: partialKey,
-          isComplete: false,
-        ),
-      );
+    // Получаем свое имя пользователя для отправки инициатору
+    final myUsername = await _getUsername();
+    
+    // Сохраняем информацию о ключах для дальнейшего завершения обмена
+    await _chatRepository.saveChatKeys(
+      ChatKey(
+        chatId: chatId,
+        userId: senderId,
+        publicKey: keyPair.publicKey,
+        privateKey: keyPair.privateKey,
+        remotePublicKey: remotePublicKey,
+        partialKey: partialKey,
+        isComplete: false,
+      ),
+    );
 
-      // Отправляем ответ с ключами
-      await _webSocketService.sendKeyExchange(
-        senderId,
-        keyPair.publicKey,
-        encryptedPartialKey,
+    // Отправляем ответ с ключами
+    await _webSocketService.sendKeyExchange(
+      senderId,
+      keyPair.publicKey,
+      encryptedPartialKey,
+    );
+
+    // Обновляем список чатов
+    _loadChats();
+  } catch (e) {
+    debugPrint('Error handling chat initialization: $e');
+    debugPrintStack();
+  }
+}
+
+  /// Обрабатывает ответ при обмене ключами.
+  Future<void> handleKeyExchangeEvent(KeyExchangeEvent event) async {
+  try {
+    final senderId = event.senderId;
+    final responderName = event.responderName;
+    final remotePublicKey = event.publicKey;
+    final encryptedPartialKey = event.encryptedPartialKey;
+
+    debugPrint('Handling key exchange from $responderName ($senderId)');
+    
+    // Получаем локальный ID чата
+    final chatId = _chatManager.generateChatId(senderId);
+
+    // Получаем наши ключи для этого чата
+    final chatKeyData = await _chatRepository.getChatKeys(chatId);
+    if (chatKeyData == null) {
+      throw Exception('Chat keys not found for chat with user: $senderId');
+    }
+
+    // Расшифровываем частичный ключ собеседника
+    debugPrint('=== DEBUG: Расшифровка частичного ключа собеседника ===');
+    final remotePartialKey = await _cryptoService.decryptAsymmetric(
+      encryptedPartialKey,
+      chatKeyData.privateKey,
+    );
+    debugPrint('=== DEBUG: ИНИЦИАТОР: Получил remotePartialKey (Base64): $remotePartialKey ===');
+
+    // Генерируем нашу часть симметричного ключа
+    final ourPartialKey = await _cryptoService.generateRandomBytes(32);
+    debugPrint('=== DEBUG: ИНИЦИАТОР: Сгенерировал ourPartialKey (Base64): $ourPartialKey ===');
+
+    // Комбинируем ключи для создания полного симметричного ключа
+    final combinedKey = await _cryptoService.deriveKey(
+      remotePartialKey + ourPartialKey
+    );
+    debugPrint('=== DEBUG: ИНИЦИАТОР: Финальный symmetricKey (Base64): $combinedKey ===');
+
+    // Шифруем нашу часть ключа для отправки
+    final encryptedOurPartialKey = await _cryptoService.encryptAsymmetric(
+      ourPartialKey,
+      remotePublicKey,
+    );
+
+    // Отправляем завершение обмена ключами
+    await _webSocketService.sendKeyExchangeComplete(
+      senderId,
+      encryptedOurPartialKey,
+    );
+
+    // Обновляем имя пользователя, если оно изменилось
+    await _chatManager.updateUserName(senderId, responderName);
+    
+    // Обновляем данные ключа в хранилище
+    await _chatRepository.saveChatKeys(
+      chatKeyData.copyWith(
+        remotePublicKey: remotePublicKey,
+        symmetricKey: combinedKey,
+        isComplete: true,
+      ),
+    );
+
+    // Обновляем статус чата на "инициализирован"
+    final chat = await _chatManager.getChatWithUser(senderId);
+    if (chat != null) {
+      await _chatRepository.saveChat(
+        chat.copyWith(isInitialized: true),
       );
 
       // Обновляем список чатов
       _loadChats();
-    } catch (e) {
-      debugPrint('Error handling chat initialization: $e');
-      debugPrintStack();
     }
+  } catch (e) {
+    debugPrint('Error handling key exchange: $e');
+    debugPrintStack();
   }
-
-  /// Обрабатывает ответ при обмене ключами.
-  Future<void> handleKeyExchangeEvent(KeyExchangeEvent event) async {
-    try {
-      final senderId = event.senderId;
-      final responderName = event.responderName;
-      final remotePublicKey = event.publicKey;
-      final encryptedPartialKey = event.encryptedPartialKey;
-
-      debugPrint('Handling key exchange from $responderName ($senderId)');
-      
-      // Получаем локальный ID чата
-      final chatId = _chatManager.generateChatId(senderId);
-
-      // Получаем наши ключи для этого чата
-      final chatKeyData = await _chatRepository.getChatKeys(chatId);
-      if (chatKeyData == null) {
-        throw Exception('Chat keys not found for chat with user: $senderId');
-      }
-
-      // Расшифровываем частичный ключ собеседника
-      final remotePartialKey = await _cryptoService.decryptAsymmetric(
-        encryptedPartialKey,
-        chatKeyData.privateKey,
-      );
-
-      // Генерируем нашу часть симметричного ключа
-      final ourPartialKey = await _cryptoService.generateRandomBytes(32);
-
-      // Комбинируем ключи для создания полного симметричного ключа
-      final combinedKey = await _cryptoService.deriveKey(
-        remotePartialKey + ourPartialKey
-      );
-
-      // Шифруем нашу часть ключа для отправки
-      final encryptedOurPartialKey = await _cryptoService.encryptAsymmetric(
-        ourPartialKey,
-        remotePublicKey,
-      );
-
-      // Отправляем завершение обмена ключами
-      await _webSocketService.sendKeyExchangeComplete(
-        senderId,
-        encryptedOurPartialKey,
-      );
-
-      // Обновляем имя пользователя, если оно изменилось
-      await _chatManager.updateUserName(senderId, responderName);
-      
-      // Обновляем данные ключа в хранилище
-      await _chatRepository.saveChatKeys(
-        chatKeyData.copyWith(
-          remotePublicKey: remotePublicKey,
-          symmetricKey: combinedKey,
-          isComplete: true,
-        ),
-      );
-
-      // Обновляем статус чата на "инициализирован"
-      final chat = await _chatManager.getChatWithUser(senderId);
-      if (chat != null) {
-        await _chatRepository.saveChat(
-          chat.copyWith(isInitialized: true),
-        );
-
-        // Обновляем список чатов
-        _loadChats();
-      }
-    } catch (e) {
-      debugPrint('Error handling key exchange: $e');
-      debugPrintStack();
-    }
-  }
+}
 
   /// Обрабатывает завершение обмена ключами.
-  Future<void> handleKeyExchangeCompleteEvent(
-      KeyExchangeCompleteEvent event) async {
-    try {
-      final senderId = event.senderId;
-      final encryptedPartialKey = event.encryptedPartialKey;
+  Future<void> handleKeyExchangeCompleteEvent(KeyExchangeCompleteEvent event) async {
+  try {
+    final senderId = event.senderId;
+    final encryptedPartialKey = event.encryptedPartialKey;
 
-      debugPrint('Handling key exchange completion from user $senderId');
-      
-      // Получаем локальный ID чата
-      final chatId = _chatManager.generateChatId(senderId);
+    debugPrint('Handling key exchange completion from user $senderId');
+    
+    // Получаем локальный ID чата
+    final chatId = _chatManager.generateChatId(senderId);
 
-      // Получаем данные ключей для этого чата
-      final chatKeyData = await _chatRepository.getChatKeys(chatId);
-      if (chatKeyData == null) {
-        throw Exception('Chat keys not found for chat with user: $senderId');
-      }
-
-      // Расшифровываем финальную часть ключа
-      final remotePartialKey = await _cryptoService.decryptAsymmetric(
-        encryptedPartialKey,
-        chatKeyData.privateKey,
-      );
-
-      // Комбинируем ключи
-      final combinedKey = await _cryptoService.deriveKey(
-        chatKeyData.partialKey + remotePartialKey
-      );
-
-      // Обновляем данные ключа
-      await _chatRepository.saveChatKeys(
-        chatKeyData.copyWith(
-          symmetricKey: combinedKey,
-          isComplete: true,
-        ),
-      );
-
-      // Обновляем статус чата
-      final chat = await _chatManager.getChatWithUser(senderId);
-      if (chat != null) {
-        await _chatRepository.saveChat(
-          chat.copyWith(isInitialized: true),
-        );
-
-        // Обновляем список чатов
-        _loadChats();
-      }
-    } catch (e) {
-      debugPrint('Error handling key exchange completion: $e');
-      debugPrintStack();
+    // Получаем данные ключей для этого чата
+    final chatKeyData = await _chatRepository.getChatKeys(chatId);
+    if (chatKeyData == null) {
+      throw Exception('Chat keys not found for chat with user: $senderId');
     }
+
+    // Расшифровываем финальную часть ключа
+    debugPrint('=== DEBUG: Расшифровка финальной части ключа ===');
+    final remotePartialKey = await _cryptoService.decryptAsymmetric(
+      encryptedPartialKey,
+      chatKeyData.privateKey,
+    );
+    debugPrint('=== DEBUG: ОТВЕЧАЮЩИЙ: Получил remotePartialKey (Base64): $remotePartialKey ===');
+    debugPrint('=== DEBUG: ОТВЕЧАЮЩИЙ: Мой partialKey (Base64): ${chatKeyData.partialKey} ===');
+
+    // Комбинируем ключи
+    final combinedKey = await _cryptoService.deriveKey(
+      chatKeyData.partialKey + remotePartialKey
+    );
+    debugPrint('=== DEBUG: ОТВЕЧАЮЩИЙ: Финальный symmetricKey (Base64): $combinedKey ===');
+
+    // Обновляем данные ключа
+    await _chatRepository.saveChatKeys(
+      chatKeyData.copyWith(
+        symmetricKey: combinedKey,
+        isComplete: true,
+      ),
+    );
+
+    // Обновляем статус чата
+    final chat = await _chatManager.getChatWithUser(senderId);
+    if (chat != null) {
+      await _chatRepository.saveChat(
+        chat.copyWith(isInitialized: true),
+      );
+
+      // Обновляем список чатов
+      _loadChats();
+    }
+  } catch (e) {
+    debugPrint('Error handling key exchange completion: $e');
+    debugPrintStack();
   }
+}
 
   /// Отправляет сообщение пользователю.
   Future<bool> sendMessage(String recipientId, String content, {String type = 'text'}) async {

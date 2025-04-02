@@ -1,14 +1,18 @@
 // crypto_service.dart
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
 import 'package:pointycastle/export.dart';
 
 import '../exceptions/crypto_exception.dart';
 import '../models/key_pair.dart';
 import '../utils/crypto_utils.dart';
 
-
 class YuCryptoService {
+  // Используем кеш для хранения расшифрованных данных
+  final Map<String, String> _decryptionCache = {};
+  final int _maxCacheSize = 100;
+
   Future<KeyPair> generateKeyPair() async {
     try {
       final pair = CryptoUtils.generateRSAKeyPair();
@@ -17,67 +21,112 @@ class YuCryptoService {
 
       final publicKeyString = _encodeRSAPublicKey(publicKey);
       final privateKeyString = _encodeRSAPrivateKey(privateKey);
+      debugPrint('KeyPair generated successfully');
       return KeyPair(publicKey: publicKeyString, privateKey: privateKeyString);
     } catch (e) {
+      debugPrint('Error generating RSA key pair: $e');
       throw CryptoException('Error generating RSA key pair', e);
     }
   }
 
   Future<String> encryptAsymmetric(String data, String publicKey) async {
     try {
+      debugPrint('Starting asymmetric encryption of data length: ${data.length}');
       final rsaPublicKey = _decodeRSAPublicKey(publicKey);
       final dataBytes = Uint8List.fromList(utf8.encode(data));
+      
+      debugPrint('Data encoded to bytes, length: ${dataBytes.length}');
+      
       final encryptedBytes = CryptoUtils.rsaEncrypt(rsaPublicKey, dataBytes);
-      return base64.encode(encryptedBytes);
-    } catch (e) {
+      debugPrint('Data encrypted successfully, length: ${encryptedBytes.length}');
+      
+      final base64Result = base64.encode(encryptedBytes);
+      debugPrint('Encrypted data encoded to base64, length: ${base64Result.length}');
+      
+      return base64Result;
+    } catch (e, stackTrace) {
+      debugPrint('Error encrypting data asymmetrically: $e');
+      debugPrint('Stack trace: $stackTrace');
       throw CryptoException('Error encrypting data asymmetrically', e);
     }
   }
 
   Future<String> decryptAsymmetric(String encryptedData, String privateKey, {bool asBase64 = true}) async {
-  try {
-    print('Starting asymmetric decryption...');
-    print('Encrypted data length: ${encryptedData.length}');
-    print('Return as base64: $asBase64');
-    
-    final rsaPrivateKey = _decodeRSAPrivateKey(privateKey);
-    print('Private key decoded');
-    
-    final encryptedBytes = base64.decode(encryptedData);
-    print('Encrypted data decoded from base64, length: ${encryptedBytes.length}');
-    
     try {
-      final decryptedBytes = CryptoUtils.rsaDecrypt(rsaPrivateKey, encryptedBytes);
-      print('Data decrypted successfully, length: ${decryptedBytes.length}');
+      debugPrint('Starting asymmetric decryption...');
+      debugPrint('Encrypted data length: ${encryptedData.length}');
+      debugPrint('Return as base64: $asBase64');
       
-      if (asBase64) {
-        // Возвращаем как base64 для бинарных данных (сессионные ключи)
-        final result = base64.encode(decryptedBytes);
-        print('Decrypted data encoded to base64 successfully');
-        return result;
-      } else {
-        try {
-          // Пытаемся декодировать как UTF-8 для текстовых данных
-          final result = utf8.decode(decryptedBytes);
-          print('Decrypted data decoded as UTF-8 successfully');
-          return result;
-        } catch (e) {
-          // Если не UTF-8, все равно возвращаем как base64
-          print('Warning: Could not decode as UTF-8, falling back to base64');
-          return base64.encode(decryptedBytes);
+      // Проверяем кеш сначала
+      final cacheKey = '$encryptedData-$privateKey-$asBase64';
+      if (_decryptionCache.containsKey(cacheKey)) {
+        debugPrint('Cache hit for decryption');
+        return _decryptionCache[cacheKey]!;
+      }
+      
+      // Если нет в кеше, выполняем расшифровку
+      final rsaPrivateKey = _decodeRSAPrivateKey(privateKey);
+      debugPrint('Private key decoded successfully');
+      
+      try {
+        // Очищаем входные данные от возможных пробелов
+        final cleanedEncryptedData = encryptedData.trim();
+        
+        // Декодируем из base64
+        final encryptedBytes = base64.decode(cleanedEncryptedData);
+        debugPrint('Encrypted data decoded from base64, length: ${encryptedBytes.length}');
+        
+        // Расшифровываем
+        final decryptedBytes = CryptoUtils.rsaDecrypt(rsaPrivateKey, encryptedBytes);
+        debugPrint('Data decrypted successfully, length: ${decryptedBytes.length}');
+        
+        String result;
+        
+        if (asBase64) {
+          // Возвращаем как base64 для бинарных данных (сессионные ключи)
+          result = base64.encode(decryptedBytes);
+          debugPrint('Decrypted data encoded to base64 successfully');
+        } else {
+          try {
+            // Пытаемся декодировать как UTF-8 для текстовых данных
+            result = utf8.decode(decryptedBytes);
+            debugPrint('Decrypted data decoded as UTF-8 successfully');
+          } catch (e) {
+            // Если не UTF-8, все равно возвращаем как base64
+            debugPrint('Warning: Could not decode as UTF-8, falling back to base64');
+            result = base64.encode(decryptedBytes);
+          }
         }
+        
+        // Сохраняем результат в кеш
+        _addToCache(cacheKey, result);
+        
+        return result;
+      } catch (e, stackTrace) {
+        debugPrint('Error during standard decryption: $e');
+        debugPrint('Stack trace: $stackTrace');
+        
+        // В случае ошибки возвращаем пустую строку вместо повторной попытки,
+        // чтобы избежать зацикливания и неконсистентных результатов
+        return "";
       }
     } catch (e, stackTrace) {
-      print('Error during RSA decryption: $e');
-      print('Stack trace: $stackTrace');
-      rethrow;
+      debugPrint('Error in decryptAsymmetric: $e');
+      debugPrint('Stack trace: $stackTrace');
+      throw CryptoException('Error decrypting data asymmetrically', e);
     }
-  } catch (e, stackTrace) {
-    print('Error in decryptAsymmetric: $e');
-    print('Stack trace: $stackTrace');
-    throw CryptoException('Error decrypting data asymmetrically', e);
   }
-}
+
+  // Метод для добавления результата в кеш
+  void _addToCache(String key, String value) {
+    // Если кеш переполнен, удаляем самый старый ключ
+    if (_decryptionCache.length >= _maxCacheSize) {
+      final oldestKey = _decryptionCache.keys.first;
+      _decryptionCache.remove(oldestKey);
+    }
+    
+    _decryptionCache[key] = value;
+  }
 
   Future<String> generateRandomBytes(int length) async {
     try {
@@ -182,5 +231,10 @@ class YuCryptoService {
     final p = keyMap['p'] != null ? BigInt.parse(keyMap['p'], radix: 16) : null;
     final q = keyMap['q'] != null ? BigInt.parse(keyMap['q'], radix: 16) : null;
     return RSAPrivateKey(modulus, exponent, p, q);
+  }
+
+  // Метод очистки кеша
+  void clearCache() {
+    _decryptionCache.clear();
   }
 }

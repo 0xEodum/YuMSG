@@ -53,12 +53,14 @@ class CommunicationService with WidgetsBindingObserver {
       final workMode = await _sessionService.getWorkMode();
       if (workMode != WorkMode.server) {
         // В локальном режиме WebSocket не используется
+        _connectionState.add(YuConnectionState.disconnected);
         return;
       }
       
       final hasSession = await _sessionService.hasFullSession();
       if (!hasSession) {
         // Нет полной сессии, соединение невозможно
+        _connectionState.add(YuConnectionState.disconnected);
         return;
       }
       
@@ -73,6 +75,7 @@ class CommunicationService with WidgetsBindingObserver {
       _isInitialized = true;
     } catch (e) {
       debugPrint('Error initializing CommunicationService: $e');
+      _connectionState.add(YuConnectionState.error);
     }
   }
   
@@ -143,7 +146,6 @@ class CommunicationService with WidgetsBindingObserver {
     } catch (e) {
       _connectionState.add(YuConnectionState.error);
       debugPrint('Error starting WebSocket connection: $e');
-      _scheduleReconnect();
     }
   }
   
@@ -151,11 +153,8 @@ class CommunicationService with WidgetsBindingObserver {
   void _handleConnectionStatusChanged(bool isConnected) {
     if (isConnected) {
       _connectionState.add(YuConnectionState.connected);
-      _reconnectTimer?.cancel();
-      _reconnectTimer = null;
     } else {
       _connectionState.add(YuConnectionState.disconnected);
-      _scheduleReconnect();
     }
   }
   

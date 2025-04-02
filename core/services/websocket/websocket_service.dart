@@ -8,10 +8,10 @@ import 'package:rxdart/rxdart.dart';
 import '../session/session_service.dart';
 import '../../data/providers/server_data_provider.dart';
 import 'websocket_event.dart';
-import '../../../features/chat/domain/services/chat_service.dart'; // Добавлен импорт
+import 'package:flutter_background_service/flutter_background_service.dart';
 
-/// Сервис для работы с WebSocket соединением.
-/// Управляет соединением с сервером и обработкой входящих/исходящих сообщений.
+/// Единый сервис для работы с WebSocket соединением.
+/// Работает как в активном приложении, так и в фоновом режиме.
 class WebSocketService {
   static final WebSocketService _instance = WebSocketService._internal();
   factory WebSocketService() => _instance;
@@ -21,7 +21,10 @@ class WebSocketService {
   Timer? _pingTimer;
   Timer? _reconnectTimer;
   bool _isConnecting = false;
-  ChatService? _chatService; // Ссылка на ChatService
+  
+  // Флаг для определения, работаем ли в фоновом режиме
+  bool _isBackgroundMode = false;
+  FlutterBackgroundService? _backgroundService;
 
   // Контроллеры для различных типов событий
   final _onConnected = BehaviorSubject<bool>.seeded(false);
@@ -44,21 +47,21 @@ class WebSocketService {
   bool get isConnected => _channel != null;
   
   WebSocketService._internal() {
-    // Инициализируем сервис с задержкой, чтобы дать время другим сервисам создаться
-    Future.delayed(Duration.zero, () {
-      _initializeChatService();
-    });
+    // Проверяем, работаем ли в фоновом режиме
+    _checkBackgroundMode();
   }
   
-  /// Инициализирует ссылку на ChatService и подписывается на события
-  void _initializeChatService() {
+  /// Проверяет, запущен ли сервис в фоновом режиме
+  void _checkBackgroundMode() {
     try {
-      _chatService = ChatService();
-      debugPrint('WebSocketService: ChatService initialized');
+      _backgroundService = FlutterBackgroundService();
+      _backgroundService!.isRunning().then((isRunning) {
+        _isBackgroundMode = isRunning;
+        debugPrint('WebSocketService: Background mode: $_isBackgroundMode');
+      });
     } catch (e) {
-      debugPrint('Error initializing ChatService in WebSocketService: $e');
-      // Повторная попытка через некоторое время
-      Future.delayed(const Duration(seconds: 1), _initializeChatService);
+      debugPrint('Error checking background service: $e');
+      _isBackgroundMode = false;
     }
   }
 
@@ -108,6 +111,12 @@ class WebSocketService {
 
       _startPingTimer();
       _onConnected.add(true);
+      
+      // Если мы в фоновом режиме, обновляем уведомление
+      if (_isBackgroundMode && _backgroundService != null) {
+        _updateBackgroundNotification('Соединение установлено');
+      }
+      
       debugPrint('WebSocket connected successfully');
     } catch (e) {
       debugPrint('Error connecting to WebSocket: $e');
@@ -122,73 +131,60 @@ class WebSocketService {
   void _handleMessage(dynamic message) {
     try {
       final messageStr = message as String;
-    debugPrint('Received WebSocket message: ${messageStr.length > 100 ? messageStr.substring(0, 100) + '...' : messageStr}');
+      debugPrint('Received WebSocket message: ${messageStr.length > 100 ? messageStr.substring(0, 100) + '...' : messageStr}');
     
-    final data = jsonDecode(messageStr);
+      final data = jsonDecode(messageStr);
     
-    if (!data.containsKey('type')) {
-      debugPrint('Invalid message format: missing type field');
-      return;
-    }
+      if (!data.containsKey('type')) {
+        debugPrint('Invalid message format: missing type field');
+        return;
+      }
     
-    final messageType = data['type'];
+      final messageType = data['type'];
     
-    if (messageType == 'pong') {
-      debugPrint('Received pong response');
-      return;
-    }
+      if (messageType == 'pong') {
+        debugPrint('Received pong response');
+        return;
+      }
     
-    if (!data.containsKey('sender_id')) {
-      debugPrint('Invalid message format: missing required fields');
-      return;
-    }
+      if (!data.containsKey('sender_id')) {
+        debugPrint('Invalid message format: missing required fields');
+        return;
+      }
     
-    final senderId = data['sender_id'];
-    final messageData = data['data'] ?? {};
+      final senderId = data['sender_id'];
+      final messageData = data['data'] ?? {};
     
-    debugPrint('Processing message type: $messageType from $senderId');
+      debugPrint('Processing message type: $messageType from $senderId');
+      
+      // Если мы в фоновом режиме, обновляем уведомление о новом сообщении
+      if (_isBackgroundMode && _backgroundService != null && messageType == 'chat.message') {
+        _updateBackgroundNotification('Новое сообщение от $senderId');
+      }
       
       switch (messageType) {
         case 'chat.init':
           debugPrint('Processing chat.init event');
           final event = ChatInitEvent.fromJson(senderId, messageData);
           
+          // Публикуем событие в соответствующий поток
           _onChatInit.add(event);
-          
-          if (_chatService != null) {
-            debugPrint('Directly passing chat.init to ChatService');
-            _chatService!.handleChatInitEvent(event);
-          } else {
-            debugPrint('WARNING: ChatService is null, cannot process chat.init');
-          }
           break;
           
         case 'chat.key_exchange':
           debugPrint('Processing chat.key_exchange event');
           final event = KeyExchangeEvent.fromJson(senderId, messageData);
           
+          // Публикуем событие в соответствующий поток
           _onKeyExchange.add(event);
-          
-          if (_chatService != null) {
-            debugPrint('Directly passing chat.key_exchange to ChatService');
-            _chatService!.handleKeyExchangeEvent(event);
-          } else {
-            debugPrint('WARNING: ChatService is null, cannot process chat.key_exchange');
-          }
           break;
           
         case 'chat.key_exchange_complete':
           debugPrint('Processing chat.key_exchange_complete event');
           final event = KeyExchangeCompleteEvent.fromJson(senderId, messageData);
           
+          // Публикуем событие в соответствующий поток
           _onKeyExchangeComplete.add(event);
-          
-          if (_chatService != null) {
-            debugPrint('Directly passing chat.key_exchange_complete to ChatService');
-            _chatService!.handleKeyExchangeCompleteEvent(event);
-          } else {
-            debugPrint('WARNING: ChatService is null, cannot process chat.key_exchange_complete');
-          }
           break;
           
         case 'chat.message':
@@ -197,12 +193,8 @@ class WebSocketService {
           
           _onMessage.add(event);
           
-          if (_chatService != null) {
-            debugPrint('Directly passing chat.message to ChatService');
-            _chatService!.handleMessageEvent(event);
-          } else {
-            debugPrint('WARNING: ChatService is null, cannot process chat.message');
-          }
+          // Автоматически отправляем статус "доставлено"
+          sendMessageStatus(senderId, event.messageId, 'delivered');
           break;
           
         case 'chat.status':
@@ -210,13 +202,6 @@ class WebSocketService {
           final event = MessageStatusEvent.fromJson(senderId, messageData);
           
           _onMessageStatus.add(event);
-          
-          if (_chatService != null) {
-            debugPrint('Directly passing chat.status to ChatService');
-            _chatService!.handleMessageStatusEvent(event);
-          } else {
-            debugPrint('WARNING: ChatService is null, cannot process chat.status');
-          }
           break;
           
         case 'chat.delete':
@@ -224,13 +209,6 @@ class WebSocketService {
           final event = ChatDeleteEvent.fromJson(senderId, messageData);
           
           _onChatDelete.add(event);
-          
-          if (_chatService != null) {
-            debugPrint('Directly passing chat.delete to ChatService');
-            _chatService!.handleChatDeleteEvent(event);
-          } else {
-            debugPrint('WARNING: ChatService is null, cannot process chat.delete');
-          }
           break;
           
         case 'pong':
@@ -251,6 +229,11 @@ class WebSocketService {
     _onConnected.add(false);
     _cleanupConnection();
     _scheduleReconnect();
+    
+    // Если мы в фоновом режиме, обновляем уведомление
+    if (_isBackgroundMode && _backgroundService != null) {
+      _updateBackgroundNotification('Ошибка соединения, переподключение...');
+    }
   }
 
   void _handleDisconnect() {
@@ -258,6 +241,11 @@ class WebSocketService {
     _cleanupConnection();
     _onConnected.add(false);
     _scheduleReconnect();
+    
+    // Если мы в фоновом режиме, обновляем уведомление
+    if (_isBackgroundMode && _backgroundService != null) {
+      _updateBackgroundNotification('Соединение потеряно, переподключение...');
+    }
   }
 
   void _cleanupConnection() {
@@ -302,6 +290,19 @@ class WebSocketService {
     _onConnected.add(false);
   }
 
+  /// Обновляет уведомление в фоновом режиме
+  void _updateBackgroundNotification(String content) {
+    if (_backgroundService != null && _isBackgroundMode) {
+      try {
+        _backgroundService!.invoke('updateNotification', {
+          'content': content
+        });
+      } catch (e) {
+        debugPrint('Error updating background notification: $e');
+      }
+    }
+  }
+
   Future<void> sendMessage(String type, String recipientId, Map<String, dynamic> data) async {
     if (!isConnected) throw Exception('WebSocket не подключен');
     
@@ -325,17 +326,17 @@ class WebSocketService {
   }
 
   Future<void> sendChatInit(String recipientId, String publicKey) async {
-  await sendMessage('chat.init', recipientId, {
-    'public_key': publicKey
-  });
-}
+    await sendMessage('chat.init', recipientId, {
+      'public_key': publicKey
+    });
+  }
 
   Future<void> sendKeyExchange(String recipientId, String publicKey, String encryptedPartialKey) async {
-  await sendMessage('chat.key_exchange', recipientId, {
-    'public_key': publicKey,
-    'encrypted_partial_key': encryptedPartialKey
-  });
-}
+    await sendMessage('chat.key_exchange', recipientId, {
+      'public_key': publicKey,
+      'encrypted_partial_key': encryptedPartialKey
+    });
+  }
 
   Future<void> sendKeyExchangeComplete(String recipientId, String encryptedPartialKey) async {
     await sendMessage('chat.key_exchange_complete', recipientId, {
@@ -362,6 +363,12 @@ class WebSocketService {
 
   Future<void> sendChatDelete(String recipientId) async {
     await sendMessage('chat.delete', recipientId, {});
+  }
+
+  /// Установление в фоновый режим
+  void setBackgroundMode(bool isBackground) {
+    _isBackgroundMode = isBackground;
+    debugPrint('WebSocketService: Setting background mode to $isBackground');
   }
 
   void dispose() {
