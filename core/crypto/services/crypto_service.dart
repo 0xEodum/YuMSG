@@ -52,70 +52,91 @@ class YuCryptoService {
   }
 
   Future<String> decryptAsymmetric(String encryptedData, String privateKey, {bool asBase64 = true}) async {
+  try {
+    debugPrint('Starting asymmetric decryption...');
+    debugPrint('Encrypted data length: ${encryptedData.length}');
+    debugPrint('Return as base64: $asBase64');
+    
+    // Проверяем кеш сначала
+    final cacheKey = '$encryptedData-$privateKey-$asBase64';
+    if (_decryptionCache.containsKey(cacheKey)) {
+      debugPrint('Cache hit for decryption');
+      return _decryptionCache[cacheKey]!;
+    }
+    
+    // Если нет в кеше, выполняем расшифровку
+    final rsaPrivateKey = _decodeRSAPrivateKey(privateKey);
+    debugPrint('Private key decoded successfully');
+    
     try {
-      debugPrint('Starting asymmetric decryption...');
-      debugPrint('Encrypted data length: ${encryptedData.length}');
-      debugPrint('Return as base64: $asBase64');
+      // Очищаем входные данные от возможных пробелов
+      final cleanedEncryptedData = encryptedData.trim();
       
-      // Проверяем кеш сначала
-      final cacheKey = '$encryptedData-$privateKey-$asBase64';
-      if (_decryptionCache.containsKey(cacheKey)) {
-        debugPrint('Cache hit for decryption');
-        return _decryptionCache[cacheKey]!;
-      }
+      // Декодируем из base64
+      final encryptedBytes = base64.decode(cleanedEncryptedData);
+      debugPrint('Encrypted data decoded from base64, length: ${encryptedBytes.length}');
       
-      // Если нет в кеше, выполняем расшифровку
-      final rsaPrivateKey = _decodeRSAPrivateKey(privateKey);
-      debugPrint('Private key decoded successfully');
+      // Расшифровываем
+      final decryptedBytes = CryptoUtils.rsaDecrypt(rsaPrivateKey, encryptedBytes);
+      debugPrint('Data decrypted successfully, length: ${decryptedBytes.length}');
       
-      try {
-        // Очищаем входные данные от возможных пробелов
-        final cleanedEncryptedData = encryptedData.trim();
-        
-        // Декодируем из base64
-        final encryptedBytes = base64.decode(cleanedEncryptedData);
-        debugPrint('Encrypted data decoded from base64, length: ${encryptedBytes.length}');
-        
-        // Расшифровываем
-        final decryptedBytes = CryptoUtils.rsaDecrypt(rsaPrivateKey, encryptedBytes);
-        debugPrint('Data decrypted successfully, length: ${decryptedBytes.length}');
-        
-        String result;
-        
-        if (asBase64) {
-          // Возвращаем как base64 для бинарных данных (сессионные ключи)
-          result = base64.encode(decryptedBytes);
-          debugPrint('Decrypted data encoded to base64 successfully');
-        } else {
-          try {
-            // Пытаемся декодировать как UTF-8 для текстовых данных
+      String result;
+      
+      if (asBase64) {
+        // Возвращаем как base64 для бинарных данных (сессионные ключи)
+        result = base64.encode(decryptedBytes);
+        debugPrint('Decrypted data encoded to base64, length: ${result.length}');
+      } else {
+        try {
+          // Пытаемся распознать, содержит ли результат уже закодированные Base64 данные
+          // Это решает проблему двойного кодирования
+          if (_isValidBase64(utf8.decode(decryptedBytes))) {
+            // Если данные уже в Base64, возвращаем их напрямую
+            result = utf8.decode(decryptedBytes);
+            debugPrint('Detected base64 in decrypted data, returning raw');
+          } else {
+            // Если не Base64, декодируем как UTF-8 для текстовых данных
             result = utf8.decode(decryptedBytes);
             debugPrint('Decrypted data decoded as UTF-8 successfully');
-          } catch (e) {
-            // Если не UTF-8, все равно возвращаем как base64
-            debugPrint('Warning: Could not decode as UTF-8, falling back to base64');
-            result = base64.encode(decryptedBytes);
           }
+        } catch (e) {
+          // Если не UTF-8, все равно возвращаем как base64
+          debugPrint('Warning: Could not decode as UTF-8, falling back to base64');
+          result = base64.encode(decryptedBytes);
         }
-        
-        // Сохраняем результат в кеш
-        _addToCache(cacheKey, result);
-        
-        return result;
-      } catch (e, stackTrace) {
-        debugPrint('Error during standard decryption: $e');
-        debugPrint('Stack trace: $stackTrace');
-        
-        // В случае ошибки возвращаем пустую строку вместо повторной попытки,
-        // чтобы избежать зацикливания и неконсистентных результатов
-        return "";
       }
+      
+      // Сохраняем результат в кеш
+      _addToCache(cacheKey, result);
+      
+      return result;
     } catch (e, stackTrace) {
-      debugPrint('Error in decryptAsymmetric: $e');
+      debugPrint('Error during standard decryption: $e');
       debugPrint('Stack trace: $stackTrace');
-      throw CryptoException('Error decrypting data asymmetrically', e);
+      
+      // В случае ошибки возвращаем пустую строку вместо повторной попытки,
+      // чтобы избежать зацикливания и неконсистентных результатов
+      return "";
     }
+  } catch (e, stackTrace) {
+    debugPrint('Error in decryptAsymmetric: $e');
+    debugPrint('Stack trace: $stackTrace');
+    throw CryptoException('Error decrypting data asymmetrically', e);
   }
+}
+bool _isValidBase64(String str) {
+  try {
+    // Проверяем, содержит ли строка только допустимые символы Base64
+    if (RegExp(r'^[A-Za-z0-9+/=]+$').hasMatch(str)) {
+      // Пробуем декодировать строку как Base64
+      base64.decode(str);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
 
   // Метод для добавления результата в кеш
   void _addToCache(String key, String value) {

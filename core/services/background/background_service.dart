@@ -5,13 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:yumsg/core/services/websocket/websocket_service.dart';
-import 'package:yumsg/features/chat/domain/services/chat_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../session/session_service.dart';
 import '../../../features/startup/domain/enums/work_mode.dart';
 
-/// Сервис для поддержания фоновых операций и уведомлений.
-/// Больше не дублирует WebSocket функциональность.
+/// Сервис для поддержания фоновых операций и показа уведомлений.
+/// Больше не создает отдельное WebSocket соединение.
 class BackgroundService {
   static final BackgroundService _instance = BackgroundService._internal();
   factory BackgroundService() => _instance;
@@ -23,9 +22,10 @@ class BackgroundService {
   
   // Инстанс флаттер сервиса
   final FlutterBackgroundService _service = FlutterBackgroundService();
+  final SessionService _sessionService = SessionService();
   
-  // Подписки на события от фонового сервиса
-  final List<StreamSubscription> _eventSubscriptions = [];
+  // Последнее уведомление для обновления
+  String _lastNotificationContent = 'Приложение работает в фоне';
   
   BackgroundService._internal();
   
@@ -36,6 +36,8 @@ class BackgroundService {
   
   /// Инициализирует фоновый сервис.
   Future<void> initialize() async {
+    debugPrint('BackgroundService: Initializing');
+    
     // Инициализируем плагин локальных уведомлений
     final notificationPlugin = FlutterLocalNotificationsPlugin();
     
@@ -91,78 +93,53 @@ class BackgroundService {
       ),
     );
     
-    // Настраиваем обработчики событий, получаемых от фонового сервиса
-    _setupEventHandlers();
-  }
-  
-  /// Настраивает обработчики событий от фонового сервиса
-  void _setupEventHandlers() {
-    // Отменяем существующие подписки
-    for (var subscription in _eventSubscriptions) {
-      subscription.cancel();
-    }
-    _eventSubscriptions.clear();
-    
-    // Подписка на обновление уведомления
-    _eventSubscriptions.add(
-      _service.on('updateNotification').listen((event) {
-        if (event != null && event.containsKey('content')) {
-          final content = event['content'] as String;
-          
-          // Обновляем уведомление
-          if (_service is AndroidServiceInstance) {
-            (_service as AndroidServiceInstance).setForegroundNotificationInfo(
-              title: 'Мессенджер',
-              content: content,
-            );
-          }
-        }
-      })
-    );
+    debugPrint('BackgroundService: Initialized successfully');
   }
   
   /// Запускает фоновый сервис.
   Future<void> start() async {
     try {
-      // Сначала проверяем, нужно ли запускать сервис
-      final sessionService = SessionService();
+      debugPrint('BackgroundService: Starting');
       
-      // Проверяем режим работы
-      final workMode = await sessionService.getWorkMode();
+      // Сначала проверяем, нужно ли запускать сервис
+      final workMode = await _sessionService.getWorkMode();
       if (workMode != WorkMode.server) {
+        debugPrint('BackgroundService: Not in server mode, skipping start');
         return; // В локальном режиме не нужен фоновый сервис
       }
       
       // Проверяем наличие сессии
-      final hasSession = await sessionService.hasFullSession();
+      final hasSession = await _sessionService.hasFullSession();
       if (!hasSession) {
+        debugPrint('BackgroundService: No session, skipping start');
         return; // Нет полной сессии, сервис не нужен
       }
       
-      // Настраиваем обработчики событий
-      _setupEventHandlers();
-      
       // Запускаем сервис
       await _service.startService();
+      
+      debugPrint('BackgroundService: Started');
     } catch (e) {
-      debugPrint('Error starting background service: $e');
+      debugPrint('BackgroundService: Error starting: $e');
     }
   }
   
   /// Останавливает фоновый сервис.
   void stop() {
+    debugPrint('BackgroundService: Stopping');
     _service.invoke('stopService');
-    
-    // Отменяем подписки на события
-    for (var subscription in _eventSubscriptions) {
-      subscription.cancel();
-    }
-    _eventSubscriptions.clear();
   }
   
-  /// Отправляет данные в фоновый сервис.
-  void sendData(Map<String, dynamic> data) {
-    _service.invoke('updateData', data);
+  /// Отправляет обновление уведомления в фоновый сервис.
+  void updateNotification(String content) {
+    _lastNotificationContent = content;
+    _service.invoke('updateNotification', {'content': content});
+  }
+  
+  /// Показывает уведомление о новом сообщении.
+  void showMessageNotification(String senderId, String content) {
+    debugPrint('BackgroundService: Showing message notification from $senderId');
+    updateNotification('Новое сообщение от $senderId');
   }
 }
 
@@ -186,36 +163,19 @@ void _onStart(ServiceInstance service) async {
     // Сначала устанавливаем информацию для уведомления
     service.setForegroundNotificationInfo(
       title: 'Мессенджер работает в фоне',
-      content: 'Инициализация...',
+      content: 'Поддержание соединения...',
     );
     
     // Только после настройки уведомления переводим сервис в foreground режим
     service.setAsForegroundService();
   }
   
-  // Импортируем ChatService для работы с сообщениями
-  final chatService = ChatService();
-  
   // Инициализируем сессию
   final sessionService = SessionService();
   
-  // Получаем WebSocketService и устанавливаем ему фоновый режим
-  final webSocketService = WebSocketService();
-  webSocketService.setBackgroundMode(true);
-  
   // Обработчик команд от основного приложения
   service.on('stopService').listen((event) {
-    webSocketService.disconnect();
     service.stopSelf();
-  });
-  
-  // Обновление данных от основного приложения
-  service.on('updateData').listen((event) {
-    if (event != null && event.containsKey('token')) {
-      // Переподключаемся с новым токеном
-      webSocketService.disconnect();
-      webSocketService.connect();
-    }
   });
   
   // Обработчик обновления уведомления
@@ -241,25 +201,4 @@ void _onStart(ServiceInstance service) async {
       service.stopSelf();
     }
   });
-  
-  // Устанавливаем соединение
-  try {
-    await webSocketService.connect();
-    
-    if (service is AndroidServiceInstance) {
-      service.setForegroundNotificationInfo(
-        title: 'Мессенджер работает в фоне',
-        content: 'Соединение установлено',
-      );
-    }
-  } catch (e) {
-    debugPrint('Error connecting WebSocket from background service: $e');
-    
-    if (service is AndroidServiceInstance) {
-      service.setForegroundNotificationInfo(
-        title: 'Мессенджер работает в фоне',
-        content: 'Ошибка соединения, переподключение...',
-      );
-    }
-  }
 }

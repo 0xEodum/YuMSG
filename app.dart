@@ -23,68 +23,32 @@ class MessengerApp extends StatefulWidget {
 class _MessengerAppState extends State<MessengerApp> with WidgetsBindingObserver {
   final CommunicationService _communicationService = CommunicationService();
   final AuthService _authService = AuthService();
-  final BackgroundService _backgroundService = BackgroundService();
   final WebSocketService _webSocketService = WebSocketService();
-  final MessageQueueService _messageQueueService = MessageQueueService();
   
   @override
   void initState() {
     super.initState();
     
-    // Добавляем наблюдатель для отслеживания жизненного цикла приложения
     WidgetsBinding.instance.addObserver(this);
     
-    // Регистрируем AuthService в провайдере для CommunicationService
     AuthServiceProvider.setService(_authService);
     
-    // Инициализируем сервисы
     _initializeServices();
   }
   
   Future<void> _initializeServices() async {
     try {
-      // Инициализируем фоновый сервис
-      await _backgroundService.initialize();
-      
-      // Проверяем, запущен ли фоновый сервис
-      final isBackgroundRunning = await _backgroundService.isRunning();
-      
-      // Если фоновый сервис уже запущен, уведомляем WebSocketService
-      if (isBackgroundRunning) {
-        _webSocketService.setBackgroundMode(true);
-      }
-      
-      // Инициализируем коммуникационный сервис
       await _communicationService.initialize();
-      
-      // Запускаем обработку очереди сообщений
-      _messageQueueService.startQueueProcessing();
     } catch (e) {
       debugPrint('Error initializing services: $e');
     }
   }
   
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    super.didChangeAppLifecycleState(state);
-    
-    if (state == AppLifecycleState.paused) {
-      // Приложение ушло в фоновый режим, запускаем фоновый сервис
-      _backgroundService.start();
-    } else if (state == AppLifecycleState.resumed) {
-      // Приложение вернулось на передний план
-      _webSocketService.setBackgroundMode(false);
-    }
-  }
-  
-  @override
   void dispose() {
-    // Отключаемся от наблюдателя жизненного цикла
     WidgetsBinding.instance.removeObserver(this);
     
-    // Освобождаем ресурсы сервисов
     _communicationService.dispose();
-    _messageQueueService.stopQueueProcessing();
     
     super.dispose();
   }
@@ -94,7 +58,6 @@ class _MessengerAppState extends State<MessengerApp> with WidgetsBindingObserver
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) {
-          // Создаем провайдер статуса соединения и инициализируем его
           final provider = ConnectionStatusProvider();
           provider.initialize(_communicationService);
           return provider;

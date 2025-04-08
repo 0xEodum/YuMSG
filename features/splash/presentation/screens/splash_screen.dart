@@ -169,7 +169,6 @@ class _SplashScreenState extends State<SplashScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Здесь можно добавить логотип приложения
             const SizedBox(height: 40),
             const CircularProgressIndicator(),
             const SizedBox(height: 24),

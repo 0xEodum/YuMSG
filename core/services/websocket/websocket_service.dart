@@ -5,13 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:rxdart/rxdart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../session/session_service.dart';
 import '../../data/providers/server_data_provider.dart';
 import 'websocket_event.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
 
 /// Единый сервис для работы с WebSocket соединением.
-/// Работает как в активном приложении, так и в фоновом режиме.
+/// Работает независимо от режима (активное приложение или фоновый режим).
 class WebSocketService {
   static final WebSocketService _instance = WebSocketService._internal();
   factory WebSocketService() => _instance;
@@ -22,12 +22,13 @@ class WebSocketService {
   Timer? _reconnectTimer;
   bool _isConnecting = false;
   
-  // Флаг для определения, работаем ли в фоновом режиме
+  // Флаг, указывающий, что приложение в фоновом режиме
   bool _isBackgroundMode = false;
-  FlutterBackgroundService? _backgroundService;
 
+  // Состояние соединения
+  final _connectionStateController = BehaviorSubject<bool>.seeded(false);
+  
   // Контроллеры для различных типов событий
-  final _onConnected = BehaviorSubject<bool>.seeded(false);
   final _onChatInit = PublishSubject<ChatInitEvent>();
   final _onKeyExchange = PublishSubject<KeyExchangeEvent>();
   final _onKeyExchangeComplete = PublishSubject<KeyExchangeCompleteEvent>();
@@ -35,8 +36,12 @@ class WebSocketService {
   final _onMessageStatus = PublishSubject<MessageStatusEvent>();
   final _onChatDelete = PublishSubject<ChatDeleteEvent>();
 
+  // Очередь сообщений для отправки после восстановления соединения
+  final List<Map<String, dynamic>> _pendingMessages = [];
+  static const String _pendingMessagesKey = 'websocket_pending_messages';
+
   // Стримы для подписки на события
-  Stream<bool> get onConnected => _onConnected.stream;
+  Stream<bool> get connectionState => _connectionStateController.stream;
   Stream<ChatInitEvent> get onChatInit => _onChatInit.stream;
   Stream<KeyExchangeEvent> get onKeyExchange => _onKeyExchange.stream;
   Stream<KeyExchangeCompleteEvent> get onKeyExchangeComplete => _onKeyExchangeComplete.stream;
@@ -44,24 +49,40 @@ class WebSocketService {
   Stream<MessageStatusEvent> get onMessageStatus => _onMessageStatus.stream;
   Stream<ChatDeleteEvent> get onChatDelete => _onChatDelete.stream;
 
-  bool get isConnected => _channel != null;
+  bool get isConnected => _channel != null && _connectionStateController.value;
   
   WebSocketService._internal() {
-    // Проверяем, работаем ли в фоновом режиме
-    _checkBackgroundMode();
+    // Загружаем отложенные сообщения при старте
+    _loadPendingMessages();
   }
   
-  /// Проверяет, запущен ли сервис в фоновом режиме
-  void _checkBackgroundMode() {
+  /// Загружает отложенные сообщения из хранилища
+  Future<void> _loadPendingMessages() async {
     try {
-      _backgroundService = FlutterBackgroundService();
-      _backgroundService!.isRunning().then((isRunning) {
-        _isBackgroundMode = isRunning;
-        debugPrint('WebSocketService: Background mode: $_isBackgroundMode');
-      });
+      final prefs = await SharedPreferences.getInstance();
+      final jsonList = prefs.getStringList(_pendingMessagesKey) ?? [];
+      
+      _pendingMessages.clear();
+      for (final json in jsonList) {
+        try {
+          _pendingMessages.add(jsonDecode(json) as Map<String, dynamic>);
+        } catch (_) {}
+      }
+      
+      debugPrint('WebSocketService: Loaded ${_pendingMessages.length} pending messages');
     } catch (e) {
-      debugPrint('Error checking background service: $e');
-      _isBackgroundMode = false;
+      debugPrint('WebSocketService: Error loading pending messages: $e');
+    }
+  }
+  
+  /// Сохраняет отложенные сообщения в хранилище
+  Future<void> _savePendingMessages() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonList = _pendingMessages.map((msg) => jsonEncode(msg)).toList();
+      await prefs.setStringList(_pendingMessagesKey, jsonList);
+    } catch (e) {
+      debugPrint('WebSocketService: Error saving pending messages: $e');
     }
   }
 
@@ -96,7 +117,7 @@ class WebSocketService {
         'token': authData.accessToken,
       });
 
-      debugPrint('Connecting to WebSocket: $uri');
+      debugPrint('WebSocketService: Connecting to WebSocket: $uri');
       
       // Устанавливаем соединение
       _channel = WebSocketChannel.connect(uri);
@@ -110,16 +131,14 @@ class WebSocketService {
       );
 
       _startPingTimer();
-      _onConnected.add(true);
+      _connectionStateController.add(true);
       
-      // Если мы в фоновом режиме, обновляем уведомление
-      if (_isBackgroundMode && _backgroundService != null) {
-        _updateBackgroundNotification('Соединение установлено');
-      }
+      // Отправляем все накопленные сообщения
+      _sendPendingMessages();
       
-      debugPrint('WebSocket connected successfully');
+      debugPrint('WebSocketService: Connected successfully');
     } catch (e) {
-      debugPrint('Error connecting to WebSocket: $e');
+      debugPrint('WebSocketService: Error connecting to WebSocket: $e');
       debugPrintStack();
       _handleError(e);
     } finally {
@@ -127,70 +146,83 @@ class WebSocketService {
     }
   }
 
+  /// Отправляет все отложенные сообщения
+  Future<void> _sendPendingMessages() async {
+    if (_pendingMessages.isEmpty) return;
+    
+    debugPrint('WebSocketService: Sending ${_pendingMessages.length} pending messages');
+    
+    // Создаем копию списка, чтобы избежать проблем при изменении коллекции
+    final messagesToSend = List<Map<String, dynamic>>.from(_pendingMessages);
+    _pendingMessages.clear();
+    
+    for (final message in messagesToSend) {
+      try {
+        _channel!.sink.add(jsonEncode(message));
+        await Future.delayed(const Duration(milliseconds: 100)); // Небольшая задержка между сообщениями
+      } catch (e) {
+        debugPrint('WebSocketService: Error sending pending message: $e');
+        // Если отправка не удалась, возвращаем сообщение в очередь
+        _pendingMessages.add(message);
+      }
+    }
+    
+    // Сохраняем оставшиеся отложенные сообщения
+    await _savePendingMessages();
+  }
+
   /// Обрабатывает входящие сообщения от сервера.
   void _handleMessage(dynamic message) {
     try {
       final messageStr = message as String;
-      debugPrint('Received WebSocket message: ${messageStr.length > 100 ? messageStr.substring(0, 100) + '...' : messageStr}');
+      debugPrint('WebSocketService: Received: ${messageStr.length > 100 ? messageStr.substring(0, 100) + '...' : messageStr}');
     
       final data = jsonDecode(messageStr);
     
       if (!data.containsKey('type')) {
-        debugPrint('Invalid message format: missing type field');
+        debugPrint('WebSocketService: Invalid message format: missing type field');
         return;
       }
     
       final messageType = data['type'];
     
       if (messageType == 'pong') {
-        debugPrint('Received pong response');
+        debugPrint('WebSocketService: Received pong response');
         return;
       }
     
       if (!data.containsKey('sender_id')) {
-        debugPrint('Invalid message format: missing required fields');
+        debugPrint('WebSocketService: Invalid message format: missing required fields');
         return;
       }
     
       final senderId = data['sender_id'];
       final messageData = data['data'] ?? {};
     
-      debugPrint('Processing message type: $messageType from $senderId');
-      
-      // Если мы в фоновом режиме, обновляем уведомление о новом сообщении
-      if (_isBackgroundMode && _backgroundService != null && messageType == 'chat.message') {
-        _updateBackgroundNotification('Новое сообщение от $senderId');
-      }
+      debugPrint('WebSocketService: Processing message type: $messageType from $senderId');
       
       switch (messageType) {
         case 'chat.init':
-          debugPrint('Processing chat.init event');
+          debugPrint('WebSocketService: Processing chat.init event');
           final event = ChatInitEvent.fromJson(senderId, messageData);
-          
-          // Публикуем событие в соответствующий поток
           _onChatInit.add(event);
           break;
           
         case 'chat.key_exchange':
-          debugPrint('Processing chat.key_exchange event');
+          debugPrint('WebSocketService: Processing chat.key_exchange event');
           final event = KeyExchangeEvent.fromJson(senderId, messageData);
-          
-          // Публикуем событие в соответствующий поток
           _onKeyExchange.add(event);
           break;
           
         case 'chat.key_exchange_complete':
-          debugPrint('Processing chat.key_exchange_complete event');
+          debugPrint('WebSocketService: Processing chat.key_exchange_complete event');
           final event = KeyExchangeCompleteEvent.fromJson(senderId, messageData);
-          
-          // Публикуем событие в соответствующий поток
           _onKeyExchangeComplete.add(event);
           break;
           
         case 'chat.message':
-          debugPrint('Processing chat.message event');
+          debugPrint('WebSocketService: Processing chat.message event');
           final event = ChatMessageEvent.fromJson(senderId, messageData);
-          
           _onMessage.add(event);
           
           // Автоматически отправляем статус "доставлено"
@@ -198,61 +230,49 @@ class WebSocketService {
           break;
           
         case 'chat.status':
-          debugPrint('Processing chat.status event');
+          debugPrint('WebSocketService: Processing chat.status event');
           final event = MessageStatusEvent.fromJson(senderId, messageData);
-          
           _onMessageStatus.add(event);
           break;
           
         case 'chat.delete':
-          debugPrint('Processing chat.delete event');
+          debugPrint('WebSocketService: Processing chat.delete event');
           final event = ChatDeleteEvent.fromJson(senderId, messageData);
-          
           _onChatDelete.add(event);
           break;
           
         case 'pong':
-          debugPrint('Received pong response');
+          debugPrint('WebSocketService: Received pong response');
           break;
           
         default:
-          debugPrint('Неизвестный тип события: $messageType');
+          debugPrint('WebSocketService: Unknown event type: $messageType');
       }
     } catch (e) {
-      debugPrint('Ошибка обработки сообщения: $e');
+      debugPrint('WebSocketService: Error processing message: $e');
       debugPrintStack();
     }
   }
 
   void _handleError(dynamic error) {
-    debugPrint('WebSocket error: $error');
-    _onConnected.add(false);
+    debugPrint('WebSocketService: WebSocket error: $error');
+    _connectionStateController.add(false);
     _cleanupConnection();
     _scheduleReconnect();
-    
-    // Если мы в фоновом режиме, обновляем уведомление
-    if (_isBackgroundMode && _backgroundService != null) {
-      _updateBackgroundNotification('Ошибка соединения, переподключение...');
-    }
   }
 
   void _handleDisconnect() {
-    debugPrint('WebSocket disconnected');
+    debugPrint('WebSocketService: WebSocket disconnected');
     _cleanupConnection();
-    _onConnected.add(false);
+    _connectionStateController.add(false);
     _scheduleReconnect();
-    
-    // Если мы в фоновом режиме, обновляем уведомление
-    if (_isBackgroundMode && _backgroundService != null) {
-      _updateBackgroundNotification('Соединение потеряно, переподключение...');
-    }
   }
 
   void _cleanupConnection() {
     try {
       _channel?.sink.close(status.goingAway);
     } catch (e) {
-      debugPrint('Error closing WebSocket channel: $e');
+      debugPrint('WebSocketService: Error closing WebSocket channel: $e');
     }
     _channel = null;
     _pingTimer?.cancel();
@@ -274,9 +294,9 @@ class WebSocketService {
           _channel!.sink.add(jsonEncode({
             'type': 'ping',
           }));
-          debugPrint('Sent ping');
+          debugPrint('WebSocketService: Sent ping');
         } catch (e) {
-          debugPrint('Error sending ping: $e');
+          debugPrint('WebSocketService: Error sending ping: $e');
           _handleError(e);
         }
       }
@@ -287,25 +307,11 @@ class WebSocketService {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _cleanupConnection();
-    _onConnected.add(false);
+    _connectionStateController.add(false);
   }
 
-  /// Обновляет уведомление в фоновом режиме
-  void _updateBackgroundNotification(String content) {
-    if (_backgroundService != null && _isBackgroundMode) {
-      try {
-        _backgroundService!.invoke('updateNotification', {
-          'content': content
-        });
-      } catch (e) {
-        debugPrint('Error updating background notification: $e');
-      }
-    }
-  }
-
+  /// Отправляет сообщение на сервер, добавляя его в очередь, если нет соединения
   Future<void> sendMessage(String type, String recipientId, Map<String, dynamic> data) async {
-    if (!isConnected) throw Exception('WebSocket не подключен');
-    
     try {
       final message = {
         'type': type,
@@ -314,14 +320,31 @@ class WebSocketService {
       };
       
       final messageJson = json.encode(message);
-      debugPrint('Sending message: ${messageJson.length > 100 ? messageJson.substring(0, 100) + '...' : messageJson}');
+      debugPrint('WebSocketService: Sending: ${messageJson.length > 100 ? messageJson.substring(0, 100) + '...' : messageJson}');
+      
+      if (!isConnected) {
+        // Если нет соединения, добавляем сообщение в очередь
+        debugPrint('WebSocketService: No connection, adding message to pending queue');
+        _pendingMessages.add(message);
+        await _savePendingMessages();
+        return;
+      }
       
       _channel!.sink.add(messageJson);
-      debugPrint('Message of type $type sent to recipient $recipientId');
+      debugPrint('WebSocketService: Message of type $type sent to recipient $recipientId');
     } catch (e) {
-      debugPrint('Error sending message: $e');
+      debugPrint('WebSocketService: Error sending message: $e');
+      
+      // В случае ошибки добавляем сообщение в очередь
+      final message = {
+        'type': type,
+        'recipient_id': recipientId,
+        'data': data
+      };
+      
+      _pendingMessages.add(message);
+      await _savePendingMessages();
       _handleError(e);
-      throw e;
     }
   }
 
@@ -365,16 +388,34 @@ class WebSocketService {
     await sendMessage('chat.delete', recipientId, {});
   }
 
-  /// Установление в фоновый режим
+  /// Установить режим работы в фоне
   void setBackgroundMode(bool isBackground) {
     _isBackgroundMode = isBackground;
-    debugPrint('WebSocketService: Setting background mode to $isBackground');
+    debugPrint('WebSocketService: Background mode set to $isBackground');
   }
 
+  /// Получить текущий режим работы
+  bool get isBackgroundMode => _isBackgroundMode;
+  
+  /// Инициировать показ уведомлений через внешний обработчик
+  void notifyMessageReceived(String senderId, String content) {
+    // Обратный вызов для взаимодействия с BackgroundService
+    // Заполняется внешним кодом через метод setNotificationCallback
+  }
+  
+  /// Коллбэк для отображения уведомлений
+  Function(String, String)? _notificationCallback;
+  
+  /// Устанавливает функцию обратного вызова для показа уведомлений
+  void setNotificationCallback(Function(String, String) callback) {
+    _notificationCallback = callback;
+  }
+
+  /// Освобождение ресурсов
   void dispose() {
     _reconnectTimer?.cancel();
     _cleanupConnection();
-    _onConnected.close();
+    _connectionStateController.close();
     _onChatInit.close();
     _onKeyExchange.close();
     _onKeyExchangeComplete.close();
