@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:rxdart/rxdart.dart';
 import '../session/session_service.dart';
 import '../websocket/websocket_service.dart';
+import '../websocket/socket_connection_manager.dart';
 import '../background/background_service.dart';
 import '../../../features/auth/domain/models/auth_data.dart';
 import '../../../features/startup/domain/enums/work_mode.dart';
@@ -18,6 +19,7 @@ class CommunicationService with WidgetsBindingObserver {
   factory CommunicationService() => _instance;
   
   final WebSocketService _webSocketService = WebSocketService();
+  final SocketConnectionManager _socketManager = SocketConnectionManager();
   final SessionService _sessionService = SessionService();
   final BackgroundService _backgroundService = BackgroundService();
   
@@ -35,13 +37,17 @@ class CommunicationService with WidgetsBindingObserver {
   bool get isConnected => currentConnectionState == YuConnectionState.connected;
   
   CommunicationService._internal() {
+    // Добавляем наблюдатель для отслеживания жизненного цикла приложения
     WidgetsBinding.instance.addObserver(this);
     
-    _webSocketService.connectionState.listen(_handleWebSocketStateChanged);
+    // Подписываемся на изменения состояния соединения
+    _socketManager.connectionState.listen(_handleConnectionStateChanged);
     
+    // Устанавливаем обработчик уведомлений
     _webSocketService.setNotificationCallback(_backgroundService.showMessageNotification);
   }
   
+  /// Инициализирует сервис коммуникации.
   Future<void> initialize() async {
     if (_isInitialized) return;
     
@@ -58,16 +64,23 @@ class CommunicationService with WidgetsBindingObserver {
       
       final hasSession = await _sessionService.hasFullSession();
       if (!hasSession) {
+        // Нет полной сессии, соединение невозможно
         _connectionState.add(YuConnectionState.disconnected);
         debugPrint('CommunicationService: No full session available');
         return;
       }
       
+      // Инициализируем фоновый сервис
       await _backgroundService.initialize();
       
-      _connectionState.add(YuConnectionState.connecting);
-      await _webSocketService.connect();
+      // Инициализируем менеджер сокетов
+      await _socketManager.initialize();
       
+      // Устанавливаем соединение
+      _connectionState.add(YuConnectionState.connecting);
+      await _socketManager.connect();
+      
+      // Запускаем таймер для обновления сессии
       _startSessionRefreshTimer();
       
       _isInitialized = true;
@@ -78,8 +91,9 @@ class CommunicationService with WidgetsBindingObserver {
     }
   }
   
-  void _handleWebSocketStateChanged(bool isConnected) {
-    debugPrint('CommunicationService: WebSocket state changed: $isConnected');
+  /// Обработчик изменений состояния WebSocket соединения.
+  void _handleConnectionStateChanged(bool isConnected) {
+    debugPrint('CommunicationService: Connection state changed: $isConnected');
     if (isConnected) {
       _connectionState.add(YuConnectionState.connected);
       _reconnectTimer?.cancel();
@@ -90,8 +104,9 @@ class CommunicationService with WidgetsBindingObserver {
     }
   }
   
+  /// Планирует автоматическое переподключение.
   void _scheduleReconnect() {
-    if (!_isAppActive) return;
+    if (!_isAppActive) return; // Не переподключаемся автоматически в фоне
     
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 5), () async {
@@ -99,7 +114,7 @@ class CommunicationService with WidgetsBindingObserver {
         debugPrint('CommunicationService: Attempting to reconnect');
         _connectionState.add(YuConnectionState.connecting);
         try {
-          await _webSocketService.connect();
+          await _socketManager.connect();
         } catch (e) {
           debugPrint('CommunicationService: Reconnect attempt failed: $e');
           _connectionState.add(YuConnectionState.error);
@@ -130,60 +145,65 @@ class CommunicationService with WidgetsBindingObserver {
     }
   }
   
+  /// Вызывается, когда приложение возвращается на передний план.
   Future<void> _onAppResumed() async {
     debugPrint('CommunicationService: App resumed');
     _isAppActive = true;
     
+    // Проверяем режим работы
     final workMode = await _sessionService.getWorkMode();
     if (workMode != WorkMode.server) return;
     
+    // Проверяем наличие сессии
     final hasSession = await _sessionService.hasFullSession();
     if (!hasSession) return;
     
-    _webSocketService.setBackgroundMode(false);
-    
-    if (!isConnected) {
+    // Устанавливаем соединение, если его нет
+    if (!_socketManager.isConnected) {
       _connectionState.add(YuConnectionState.connecting);
-      await _webSocketService.connect();
+      await _socketManager.connect();
     }
     
-    if (await _backgroundService.isRunning()) {
-      _backgroundService.stop();
-    }
+    // Останавливаем фоновый сервис
+    _backgroundService.stop();
     
+    // Обновляем токен и проверяем сессию
     await _refreshSessionIfNeeded();
   }
   
+  /// Вызывается, когда приложение уходит на задний план.
   Future<void> _onAppPaused() async {
     debugPrint('CommunicationService: App paused');
     _isAppActive = false;
     
+    // Проверяем режим работы
     final workMode = await _sessionService.getWorkMode();
     if (workMode != WorkMode.server) return;
     
+    // Проверяем наличие сессии
     final hasSession = await _sessionService.hasFullSession();
     if (!hasSession) return;
     
-    _webSocketService.setBackgroundMode(true);
-    
+    // Запускаем фоновый сервис для уведомлений
     await _backgroundService.start();
   }
   
+  /// Вызывается, когда приложение закрывается.
   void _onAppDetached() {
     debugPrint('CommunicationService: App detached');
     _isAppActive = false;
-    // Если приложение закрывается, отключаемся от WebSocket
-    // _webSocketService.disconnect();
   }
   
+  /// Запускает таймер для периодического обновления сессии.
   void _startSessionRefreshTimer() {
     _sessionRefreshTimer?.cancel();
     _sessionRefreshTimer = Timer.periodic(
-      const Duration(minutes: 15),
+      const Duration(minutes: 15), // Проверяем каждые 15 минут
       (_) => _refreshSessionIfNeeded(),
     );
   }
   
+  /// Обновляет сессию, если токен близок к истечению срока действия.
   Future<void> _refreshSessionIfNeeded() async {
     try {
       debugPrint('CommunicationService: Checking session for refresh');
@@ -207,11 +227,8 @@ class CommunicationService with WidgetsBindingObserver {
         await _sessionService.saveAuthData(result.data!);
         debugPrint('CommunicationService: Session refreshed successfully');
         
-        // Переподключаемся с новым токеном, если уже подключены
-        if (isConnected) {
-          await _webSocketService.disconnect();
-          await _webSocketService.connect();
-        }
+        // Обновляем токен в менеджере сокетов
+        await _socketManager.updateToken(result.data!.accessToken);
       } else {
         // Ошибка обновления токена
         debugPrint('CommunicationService: Failed to refresh session: ${result.error}');
@@ -227,7 +244,6 @@ class CommunicationService with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _reconnectTimer?.cancel();
     _sessionRefreshTimer?.cancel();
-    await _webSocketService.disconnect();
     _connectionState.close();
     _isInitialized = false;
   }

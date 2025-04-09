@@ -8,7 +8,6 @@ import '../../../../core/services/communication/connection_state.dart';
 import '../../../../core/services/websocket/websocket_service.dart';
 import '../../../../core/crypto/services/crypto_service.dart';
 import '../models/chat_message.dart';
-import '../models/chat_key.dart';
 import '../managers/chat_manager.dart';
 import '../repositories/chat_repository.dart';
 
