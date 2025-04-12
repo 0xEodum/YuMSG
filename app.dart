@@ -24,6 +24,7 @@ class _MessengerAppState extends State<MessengerApp> with WidgetsBindingObserver
   final CommunicationService _communicationService = CommunicationService();
   final AuthService _authService = AuthService();
   final WebSocketService _webSocketService = WebSocketService();
+  final BackgroundService _backgroundService = BackgroundService();
   
   @override
   void initState() {
@@ -38,9 +39,30 @@ class _MessengerAppState extends State<MessengerApp> with WidgetsBindingObserver
   
   Future<void> _initializeServices() async {
     try {
+      // Сначала инициализируем BackgroundService
+      await _backgroundService.initialize();
+      
+      // Потом инициализируем CommunicationService, который запустит WebSocketService
       await _communicationService.initialize();
+      
+      // Запускаем фоновый сервис для показа уведомления
+      await _backgroundService.start();
     } catch (e) {
       debugPrint('Error initializing services: $e');
+    }
+  }
+  
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Передаем событие жизненного цикла в CommunicationService
+    // но также обрабатываем его здесь для запуска/остановки фонового сервиса
+    
+    if (state == AppLifecycleState.paused) {
+      // Запускаем фоновый сервис для показа уведомления
+      _backgroundService.start();
+    } else if (state == AppLifecycleState.resumed) {
+      // Если приложение вернулось в активное состояние, останавливаем фоновый сервис
+      _backgroundService.stop();
     }
   }
   

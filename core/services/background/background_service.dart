@@ -9,8 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../session/session_service.dart';
 import '../../../features/startup/domain/enums/work_mode.dart';
 
-/// Сервис для поддержания фоновых операций и показа уведомлений.
-/// Больше не создает отдельное WebSocket соединение.
+/// Сервис для поддержания работы приложения в фоне и показа уведомлений.
+/// Не создает отдельное WebSocket соединение, полагается на нативный SocketService.
 class BackgroundService {
   static final BackgroundService _instance = BackgroundService._internal();
   factory BackgroundService() => _instance;
@@ -96,12 +96,12 @@ class BackgroundService {
     debugPrint('BackgroundService: Initialized successfully');
   }
   
-  /// Запускает фоновый сервис.
+  /// Запускает фоновый сервис для показа уведомления.
   Future<void> start() async {
     try {
       debugPrint('BackgroundService: Starting');
       
-      // Сначала проверяем, нужно ли запускать сервис
+      // Проверяем, нужно ли запускать сервис
       final workMode = await _sessionService.getWorkMode();
       if (workMode != WorkMode.server) {
         debugPrint('BackgroundService: Not in server mode, skipping start');
@@ -115,7 +115,7 @@ class BackgroundService {
         return; // Нет полной сессии, сервис не нужен
       }
       
-      // Запускаем сервис
+      // Запускаем сервис только для показа уведомления
       await _service.startService();
       
       debugPrint('BackgroundService: Started');

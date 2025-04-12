@@ -8,6 +8,7 @@ import '../../../../core/services/communication/connection_state.dart';
 import '../../../../core/services/websocket/websocket_service.dart';
 import '../../../../core/crypto/services/crypto_service.dart';
 import '../models/chat_message.dart';
+import '../models/chat_key.dart';
 import '../managers/chat_manager.dart';
 import '../repositories/chat_repository.dart';
 
@@ -139,25 +140,30 @@ class MessageQueueService {
           }
           
           // Отправляем сообщение
-          await _webSocketService.sendChatMessage(
+          final success = await _webSocketService.sendChatMessage(
             recipientId,
             message.id,
             encryptedContent,
             type: message.type,
           );
           
-          // Помечаем сообщение как отправленное
-          sentMessageIds.add(message.id);
-          
-          // Обновляем статус сообщения в хранилище
-          final updatedMessage = message.copyWith(
-            status: MessageStatus.sent,
-            encryptedContent: encryptedContent
-          );
-          await _chatRepository.saveMessage(updatedMessage);
-          
-          debugPrint('Successfully sent pending message ${message.id}');
-          
+          if (success) {
+            // Помечаем сообщение как отправленное
+            sentMessageIds.add(message.id);
+            
+            // Обновляем статус сообщения в хранилище
+            final updatedMessage = message.copyWith(
+              status: MessageStatus.sent,
+              encryptedContent: encryptedContent
+            );
+            await _chatRepository.saveMessage(updatedMessage);
+            
+            debugPrint('Successfully sent pending message ${message.id}');
+          } else {
+            debugPrint('Failed to send pending message ${message.id}, will retry later');
+            // Прерываем обработку, если не удалось отправить (веб-сокет не подключен)
+            break;
+          }
         } catch (e) {
           debugPrint('Error sending pending message ${message.id}: $e');
           // Продолжаем с другими сообщениями
