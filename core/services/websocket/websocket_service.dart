@@ -54,9 +54,6 @@ class WebSocketService {
   // Коллбэк для отображения уведомлений
   Function(String, String)? _notificationCallback;
   
-  // Подписка на события
-  StreamSubscription? _eventSubscription;
-  
   WebSocketService._internal() {
     // Запускаем слушатель событий от нативного кода
     _setupEventChannel();
@@ -87,9 +84,6 @@ class WebSocketService {
         'token': authData.accessToken,
       });
       
-      // Получаем сохраненные сообщения, которые поступали, когда Flutter был неактивен
-      await _getSavedMessages();
-      
       // Подключаемся к серверу
       await _methodChannel.invokeMethod('connect');
       
@@ -100,31 +94,9 @@ class WebSocketService {
     }
   }
   
-  /// Получает сохраненные сообщения из нативного слоя
-  Future<void> _getSavedMessages() async {
-    try {
-      final messages = await _methodChannel.invokeMethod<List<dynamic>>('getStoredMessages') ?? [];
-      
-      if (messages.isNotEmpty) {
-        debugPrint('WebSocketService: Retrieved ${messages.length} saved messages');
-        
-        // Обрабатываем каждое сохраненное сообщение
-        for (final messageStr in messages) {
-          if (messageStr is String) {
-            _processIncomingMessage(messageStr);
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('WebSocketService: Error getting saved messages: $e');
-    }
-  }
-  
   /// Настраивает слушателя событий от нативного кода
   void _setupEventChannel() {
-    _eventSubscription?.cancel();
-    
-    _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
+    _eventChannel.receiveBroadcastStream().listen(
       (dynamic event) {
         if (event is! Map<dynamic, dynamic>) return;
         
@@ -411,17 +383,8 @@ class WebSocketService {
     return await sendMessage('chat.delete', recipientId, {});
   }
 
-  /// Переинициализирует EventChannel (вызывается при восстановлении приложения)
-  Future<void> reconnectEventChannel() async {
-    _setupEventChannel();
-    
-    // Получаем сохраненные сообщения, которые поступали, когда Flutter был неактивен
-    await _getSavedMessages();
-  }
-
   /// Освобождение ресурсов
   void dispose() {
-    _eventSubscription?.cancel();
     _connectionStateController.close();
     _messageSubject.close();
     _onChatInit.close();
