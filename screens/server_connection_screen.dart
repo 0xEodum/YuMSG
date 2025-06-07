@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:yumsg/widgets/scrollable_card.dart';
 import '../services/app_state_service.dart';
+import '../constants/enums.dart';
 
 class ServerConnectionScreen extends StatefulWidget {
   const ServerConnectionScreen({super.key});
@@ -328,17 +329,17 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
     IconData icon;
 
     switch (status.state) {
-      case ConnectionState.error:
+      case ServerConnectionState.error:
         bgColor = isDark ? const Color(0xFF7F1D1D).withOpacity(0.2) : const Color(0xFFFEF2F2);
         textColor = isDark ? const Color(0xFFF87171) : const Color(0xFFDC2626);
         icon = Icons.error;
         break;
-      case ConnectionState.success:
+      case ServerConnectionState.success:
         bgColor = isDark ? const Color(0xFF14532D).withOpacity(0.2) : const Color(0xFFF0FEF9);
         textColor = isDark ? const Color(0xFF34D399) : const Color(0xFF059669);
         icon = Icons.check_circle;
         break;
-      case ConnectionState.connecting:
+      case ServerConnectionState.connecting:
         bgColor = isDark ? const Color(0xFF92400E).withOpacity(0.2) : const Color(0xFFFFFBEB);
         textColor = isDark ? const Color(0xFFFBBF24) : const Color(0xFFD97706);
         icon = Icons.sync;
@@ -439,7 +440,7 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
     if (_ipController.text.isEmpty || _portController.text.isEmpty) {
       setState(() {
         _connectionStatus = ConnectionStatus(
-          state: ConnectionState.error,
+          state: ServerConnectionState.error,
           message: 'Введите IP-адрес и порт сервера',
         );
       });
@@ -449,7 +450,7 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
     setState(() {
       _isConnecting = true;
       _connectionStatus = ConnectionStatus(
-        state: ConnectionState.connecting,
+        state: ServerConnectionState.connecting,
         message: 'Проверка соединения...',
       );
     });
@@ -466,12 +467,12 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
       _isConnecting = false;
       if (isSuccess) {
         _connectionStatus = ConnectionStatus(
-          state: ConnectionState.success,
+          state: ServerConnectionState.success,
           message: 'Подключение установлено успешно',
         );
       } else {
         _connectionStatus = ConnectionStatus(
-          state: ConnectionState.error,
+          state: ServerConnectionState.error,
           message: 'Не удалось подключиться к серверу. Проверьте адрес и порт.',
         );
       }
@@ -501,10 +502,8 @@ class ServerConfig {
 }
 
 class ConnectionStatus {
-  final ConnectionState state;
+  final ServerConnectionState state;
   final String message;
 
   ConnectionStatus({required this.state, required this.message});
 }
-
-enum ConnectionState { connecting, success, error }

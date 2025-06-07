@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/app_state_service.dart';
 import '../services/theme_service.dart';
 import 'profile_screen.dart';
+import 'encryption_settings_screen.dart'; // Добавляем импорт нового экрана
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -216,7 +217,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _buildSettingsItem(
           icon: Icons.security,
           title: 'Сквозное шифрование',
-          subtitle: 'Защита сообщений и файлов от посторонних',
+          subtitle: 'Настройка алгоритмов защиты сообщений и файлов',
           onTap: _handleEncryptionSettings,
           isDark: isDark,
         ),
@@ -575,8 +576,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _handleEncryptionSettings() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Настройки шифрования')),
+    // ОБНОВЛЕНО: Теперь переходим к экрану настроек шифрования
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const EncryptionSettingsScreen(),
+      ),
     );
   }
 

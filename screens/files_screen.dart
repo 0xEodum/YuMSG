@@ -1,6 +1,7 @@
 // screens/files_screen.dart
 import 'package:flutter/material.dart';
 import '../services/theme_service.dart';
+import '../constants/file_types.dart';
 
 class FilesScreen extends StatefulWidget {
   const FilesScreen({super.key});
@@ -14,23 +15,6 @@ class _FilesScreenState extends State<FilesScreen> {
   String _searchQuery = '';
   String _selectedCategory = 'all';
 
-  // Типы файлов с цветами и иконками
-  final Map<String, FileTypeInfo> _fileTypes = {
-    'pdf': FileTypeInfo(color: const Color(0xFFDC2626), icon: Icons.description, extension: 'PDF'),
-    'doc': FileTypeInfo(color: const Color(0xFF2563EB), icon: Icons.description, extension: 'DOC'),
-    'docx': FileTypeInfo(color: const Color(0xFF2563EB), icon: Icons.description, extension: 'DOCX'),
-    'jpg': FileTypeInfo(color: const Color(0xFF059669), icon: Icons.image, extension: 'JPG'),
-    'jpeg': FileTypeInfo(color: const Color(0xFF059669), icon: Icons.image, extension: 'JPEG'),
-    'png': FileTypeInfo(color: const Color(0xFF7C3AED), icon: Icons.image, extension: 'PNG'),
-    'gif': FileTypeInfo(color: const Color(0xFFEC4899), icon: Icons.gif, extension: 'GIF'),
-    'mp3': FileTypeInfo(color: const Color(0xFFEA580C), icon: Icons.audio_file, extension: 'MP3'),
-    'wav': FileTypeInfo(color: const Color(0xFFEA580C), icon: Icons.audio_file, extension: 'WAV'),
-    'mp4': FileTypeInfo(color: const Color(0xFFDB2777), icon: Icons.video_file, extension: 'MP4'),
-    'avi': FileTypeInfo(color: const Color(0xFFDB2777), icon: Icons.video_file, extension: 'AVI'),
-    'zip': FileTypeInfo(color: const Color(0xFF6B7280), icon: Icons.archive, extension: 'ZIP'),
-    'rar': FileTypeInfo(color: const Color(0xFF6B7280), icon: Icons.archive, extension: 'RAR'),
-    'txt': FileTypeInfo(color: const Color(0xFF374151), icon: Icons.text_snippet, extension: 'TXT'),
-  };
 
   // Примеры файлов
   final List<FileInfo> _sampleFiles = [
@@ -335,8 +319,7 @@ class _FilesScreenState extends State<FilesScreen> {
   }
 
   Widget _buildFileCard(FileInfo file, bool isDark) {
-    final typeInfo = _fileTypes[file.type] ?? 
-        FileTypeInfo(color: const Color(0xFF6B7280), icon: Icons.insert_drive_file, extension: 'FILE');
+    final typeInfo = FileTypes.getFileTypeInfo(file.type);
 
     return GestureDetector(
       onTap: () => _handleFileTap(file),
@@ -598,18 +581,6 @@ class _FilesScreenState extends State<FilesScreen> {
       SnackBar(content: Text('Поделиться: ${file.name}')),
     );
   }
-}
-
-class FileTypeInfo {
-  final Color color;
-  final IconData icon;
-  final String extension;
-
-  FileTypeInfo({
-    required this.color,
-    required this.icon,
-    required this.extension,
-  });
 }
 
 class FileInfo {

@@ -5,6 +5,8 @@ import '../services/theme_service.dart';
 import 'settings_screen.dart';
 import 'files_screen.dart';
 import 'profile_screen.dart';
+import 'chat_screen.dart';
+import '../models/chat_models.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -841,9 +843,18 @@ class _ChatListScreenState extends State<ChatListScreen> with TickerProviderStat
   }
 
   void _handleChatTap(ChatInfo chat) {
-    // Плейсхолдер для перехода к чату
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Открыть чат с ${chat.name}')),
+    // ОБНОВЛЕНО: Теперь переходим к экрану чата
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ChatScreen(
+          contact: ChatContact(
+            name: chat.name,
+            avatar: chat.avatar,
+            isOnline: chat.isOnline,
+          ),
+        ),
+      ),
     );
   }
 
@@ -956,26 +967,4 @@ class _ChatListScreenState extends State<ChatListScreen> with TickerProviderStat
       }
     }
   }
-}
-
-class ChatInfo {
-  final int id;
-  final String name;
-  final String lastMessage;
-  final String time;
-  final int unread;
-  final String avatar;
-  final bool isOnline;
-  final bool isGroup;
-
-  ChatInfo({
-    required this.id,
-    required this.name,
-    required this.lastMessage,
-    required this.time,
-    required this.unread,
-    required this.avatar,
-    required this.isOnline,
-    this.isGroup = false,
-  });
 }
